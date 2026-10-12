@@ -220,7 +220,7 @@ def _tesseract(img: np.ndarray) -> list[dict]:
     return result
 
 
-def _estimate_text_style(img: np.ndarray, box: list[float]) -> dict:
+def _estimate_text_style(img: np.ndarray, box: list[float], text:str='', family:str|None=None) -> dict:
     """Estimate ink colour and point size from a tight OCR line box.
 
     This is a visual measurement, not a font-recognition claim. DeepSeek may
@@ -240,12 +240,26 @@ def _estimate_text_style(img: np.ndarray, box: list[float]) -> dict:
     pixels=core.reshape(-1,3).astype(np.float32)
     distance=np.linalg.norm(pixels-background,axis=1)
     ink=pixels[distance>=38]
+    size=round(max(6,min(96,(y2-y1)*.504)),1)
+    evidence=None
+    if text:
+        from .fonts import measure_text,default_cjk_font
+        metrics=measure_text(text,24,family or default_cjk_font(),'cjk' if re.search(r'[\u3400-\u9fff]',text) else 'latin')
+        ys=np.where((distance>=38).reshape(core.shape[:2]))[0]
+        ink_height=float(ys.max()-ys.min()+1) if len(ys) else float(y2-y1)
+        measured_height=metrics['ink_box_pt'][3]-metrics['ink_box_pt'][1]
+        if measured_height>0:
+            # Normalize image pixels to the actual 540pt slide, then match the
+            # selected face's visible glyph height. Independent of resolution.
+            size=round(max(6,min(96,24*(ink_height*540/h)/measured_height)),1)
+            evidence={'method':'source ink height / actual font glyph height','source_ink_height_px':ink_height,
+                      'image_height_px':h,'measured_font':metrics['font'],'estimate_pt':size}
     if len(ink)<max(2,int(len(pixels)*.015)):
-        return {'size':round(max(6,min(96,(y2-y1)*.504)),1)}
+        return {'size':size,**({'font_size_evidence':evidence} if evidence else {})}
     # Median suppresses anti-aliased edge colors while retaining colored ink.
     rgb=np.clip(np.median(ink,axis=0),0,255).astype(np.uint8)
     color=''.join(f'{int(c):02X}' for c in rgb)
-    return {'size':round(max(6,min(96,(y2-y1)*.504)),1),'color':color}
+    return {'size':size,'color':color,**({'font_size_evidence':evidence} if evidence else {})}
 
 
 def _estimate_fidelity_ink_color(img: np.ndarray, box: list[float]) -> str | None:
@@ -389,7 +403,8 @@ def detect_text(p:dict,sid:str,backend='auto') -> dict:
     for i,r in enumerate(detected,1):
         r['id']=f'text_{i:03d}'
         r['role']='custom'
-        r['style']=_estimate_text_style(im,r['box'])
+        r['style']=_estimate_text_style(im,r['ocr_box'],r.get('source_text',r['text']),p.get('design',{}).get('font'))
+        if 'font_size_evidence' in r['style']:r['font_size_evidence']=r['style'].pop('font_size_evidence')
         if clean_image is not None:
             x1,y1,x2,y2=as_pixels(r['box'],im.shape[1],im.shape[0])
             if x2>x1 and y2>y1:
@@ -474,7 +489,7 @@ def persist_regions(p:dict,sid:str,regions:list[dict]) -> dict:
             value=r.get(key)
             if isinstance(value,str) and value and len(value)<=1600:
                 item[key]=value
-        for key in ('char_start','char_end','run_order','whitespace','ocr_box','text_layout','layout_managed','layout_locks','kind'):
+        for key in ('char_start','char_end','run_order','whitespace','ocr_box','text_layout','layout_managed','layout_locks','kind','font_size_evidence'):
             if key in r:item[key]=r[key]
         source_box=r.get('source_box')
         if isinstance(source_box,(list,tuple)) and len(source_box)==4:

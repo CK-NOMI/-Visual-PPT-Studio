@@ -104,3 +104,20 @@ def test_multiline_planned_copy_can_be_saved_then_updated_again(tmp_path,monkeyp
     body=[e for e in s['elements'] if e.get('logical_id')=='body']
     assert len({e['line_id'] for e in body})==2
     assert ''.join(e['text'] for e in body)=='新正文 English新第二行 Token'
+
+
+def test_source_size_estimation_is_resolution_independent():
+    from PIL import Image,ImageDraw,ImageFont
+    import numpy as np
+    from studio import reconstruction as rc
+    from studio.fonts import resolve_font
+    descriptor=resolve_font('Noto Sans')
+    font=ImageFont.truetype(descriptor['path'],48)
+    image=Image.new('RGB',(960,540),'white');draw=ImageDraw.Draw(image)
+    draw.text((50,50),'English',font=font,fill='black')
+    bbox=draw.textbbox((50,50),'English',font=font)
+    box=[bbox[0]/960,bbox[1]/540,(bbox[2]-bbox[0])/960,(bbox[3]-bbox[1])/540]
+    small=rc._estimate_text_style(np.asarray(image),box,'English','Noto Sans')
+    large=rc._estimate_text_style(np.asarray(image.resize((1920,1080))),box,'English','Noto Sans')
+    assert small['size']==pytest.approx(48,abs=2)
+    assert large['size']==pytest.approx(small['size'],abs=1)

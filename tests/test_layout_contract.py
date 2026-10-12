@@ -35,7 +35,7 @@ def test_pptx_is_exact_native_single_line_and_contains_layout_manifest(tmp_path)
         assert 'stage_visual_renderer' in xml and 'file_sha256' in xml
 
 
-@pytest.mark.parametrize('mutation',['space','size','duplicate','box'])
+@pytest.mark.parametrize('mutation',['space','size','duplicate','box','font'])
 def test_exact_check_detects_corruption_not_hidden_by_loose_text_matching(tmp_path,mutation):
     from copy import deepcopy as dc
     from pptx.util import Pt
@@ -44,6 +44,7 @@ def test_exact_check_detects_corruption_not_hidden_by_loose_text_matching(tmp_pa
     if mutation=='space':shape.text=shape.text.strip()
     elif mutation=='size':shape.text_frame.paragraphs[0].runs[0].font.size=Pt(10)
     elif mutation=='box':shape.left+=100000
+    elif mutation=='font':shape.text_frame.paragraphs[0].runs[0].font.name='Wrong Family'
     else:pp.slides[0].shapes._spTree.append(dc(shape._element))
     pp.save(file)
     assert not check_saved_layout(p,file)['ok']

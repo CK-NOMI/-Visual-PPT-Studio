@@ -209,12 +209,24 @@ def check_saved_layout(project,pptx_path):
             if tf.word_wrap is not False or tf._txBody.bodyPr.find(qn('a:noAutofit')) is None:
                 differences.append({'id':id_,'type':'wrap_or_autofit_enabled'})
             if e['kind']=='text':
+                st=e.get('style',{})
+                latin=st.get('font') or project.get('design',{}).get('font') or 'Arial'
+                east=st.get('eastAsianFont') or latin
+                if len(tf.paragraphs)!=1:
+                    differences.append({'id':id_,'type':'export_created_multiple_paragraphs'})
                 for p in tf.paragraphs:
                     for run in p.runs:
                         size=run.font.size.pt if run.font.size else None
                         if size is None or abs(size-float(e.get('style',{}).get('size',18)))>.011:
                             differences.append({'id':id_,'type':'export_changed_font_size','actual':size})
-                st=e.get('style',{})
+                        props=run._r.get_or_add_rPr()
+                        for tag,family in [('a:latin',latin),('a:ea',east),('a:cs',east)]:
+                            node=props.find(qn(tag))
+                            if node is None or node.get('typeface')!=family:
+                                differences.append({'id':id_,'type':'export_changed_font','slot':tag,'expected':family,
+                                                    'actual':node.get('typeface') if node is not None else None})
+                        if bool(run.font.bold)!=bool(st.get('bold',False)) or bool(run.font.italic)!=bool(st.get('italic',False)):
+                            differences.append({'id':id_,'type':'export_changed_font_style'})
                 for key,margin in [('margin_left_pt',tf.margin_left),('margin_right_pt',tf.margin_right),
                                    ('margin_top_pt',tf.margin_top),('margin_bottom_pt',tf.margin_bottom)]:
                     if abs(margin.pt-float(st.get(key,0)))>.011:

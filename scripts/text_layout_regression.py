@@ -87,6 +87,8 @@ def main():
     original = read_project(args.project_id)
     folder = project_dir(args.project_id)/'build'/'text-layout-v2'/args.label
     folder.mkdir(parents=True, exist_ok=True)
+    if (folder/'full.pptx').exists():
+        parser.error('This artifact label already exists; use a new --label to preserve its evidence/hash')
     safe_json_write(folder/'source_project.json', original)
     project = deepcopy(original)
     if args.label != 'baseline':
