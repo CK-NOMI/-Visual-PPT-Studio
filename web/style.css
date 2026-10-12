@@ -45,3 +45,18 @@
 @media(max-width:820px){.scene-rows{grid-template-columns:1fr}}
 .qa-comparisons{display:grid;gap:18px}.qa-page{padding:14px;border:1px solid #e5eaf3;border-radius:11px;background:#fbfcff}.qa-page-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;color:#34496f;font-size:12px}.qa-page-title span{color:#7d8ba3;font-size:11px;text-align:right}.qa-page-images{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:14px;align-items:start;overflow-x:auto}.qa-page-images>div{min-width:0}.qa-page-images label{margin:6px 0;color:#6c7b95}.qa-page-images img,.qa-preview-empty{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#edf1f8;border:1px solid #dce3ee;border-radius:8px}.qa-preview-empty{display:grid;place-items:center;padding:20px;color:#8996ac;text-align:center;font-size:12px}
 .reconstruction-progress{margin-top:16px;padding:14px;border:1px solid #e1e7f4;border-radius:10px;background:#fff;color:#344765;font-size:12px}.reconstruction-progress>strong{font-size:14px;color:#253b7e}.reconstruction-page-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;margin:10px 0}.reconstruction-page{display:grid;grid-template-columns:auto 1fr;gap:2px 8px;text-align:left;padding:9px 10px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#344765;cursor:pointer}.reconstruction-page b{grid-row:span 2}.reconstruction-page span,.reconstruction-page small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.reconstruction-page small{font-size:10px;color:#7b879b}.reconstruction-page.active{outline:2px solid #8799ed}.reconstruction-page.done{border-color:#bde8d1;background:#f3fbf6}.reconstruction-page.blocked{border-color:#f0d6b8;background:#fffaf3}
+
+/* Match explicit saved fonts and preserve source spaces. Browser is a draft. */
+@font-face{font-family:"Noto Sans";src:url("/static/fonts/NotoSans-VF.ttf");font-weight:100 900}
+@font-face{font-family:"Noto Sans SC";src:url("/static/fonts/NotoSansSC-VF.ttf");font-weight:100 900}
+@font-face{font-family:"Noto Serif";src:url("/static/fonts/NotoSerif-VF.ttf");font-weight:100 900}
+@font-face{font-family:"Noto Serif SC";src:url("/static/fonts/NotoSerifSC-VF.ttf");font-weight:100 900}
+.auto-preview-text{white-space:pre;align-items:flex-start;overflow:visible}
+.stage-el{white-space:pre}
+
+/* A selection outline must never move glyphs or consume frame width. */
+.stage .stage-el{border:0;white-space:pre;overflow:visible}
+.stage .stage-el.selected{border:0;outline:1.5px dashed #ff9325;outline-offset:0}
+.stage .glyph-line{white-space:pre;flex:none}
+.stage .baseline-marker{padding:0;border:0;margin:0}
+.qa-image-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.qa-image-pair img{width:100%}

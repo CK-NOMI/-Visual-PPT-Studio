@@ -23,7 +23,12 @@ def to_mathml(latex: str) -> str:
         raise ValueError('公式源码最多 2000 个字符')
     try:
         from latex2mathml.converter import convert
-        raw = convert(latex.strip(), display='block')
+        expression = latex.strip()
+        for left, right in (('\\(', '\\)'), ('\\[', '\\]'), ('$', '$')):
+            if expression.startswith(left) and expression.endswith(right):
+                expression = expression[len(left):-len(right)]
+                break
+        raw = convert(expression, display='block')
         root = etree.fromstring(raw.encode('utf-8'))
     except Exception as exc:
         raise ValueError('公式无法解析，请检查 LaTeX 语法：' + str(exc)[:180]) from exc
@@ -44,6 +49,37 @@ def to_mathml(latex: str) -> str:
     if root.find('.//{%s}merror' % MATHML_NS) is not None:
         raise ValueError('公式解析器检测到语法错误')
     return etree.tostring(root, encoding='unicode')
+
+
+def measure_formula(latex: str, size: float) -> dict:
+    """Measure MathML structure rather than the width of literal LaTeX source.
+
+    Fractions, roots and scripts have separate extents. Office's OMML renderer
+    remains the final authority; approximation is explicitly reported.
+    """
+    from .fonts import measure_text
+    root = etree.fromstring(to_mathml(latex).encode())
+    face = measure_text('x', size, 'Cambria Math')
+    def extent(node, scale=1):
+        tag = etree.QName(node).localname
+        children = list(node)
+        if not children:
+            m = measure_text(''.join(node.itertext()) or ' ', size*scale, 'Cambria Math')
+            return m['advance_pt'], m['ascent_pt'], m['descent_pt']
+        parts = [extent(child, scale) for child in children]
+        if tag == 'mfrac':
+            return max(p[0] for p in parts)+size*scale*.2, sum(p[1]+p[2] for p in parts)/2+size*scale*.25, sum(p[1]+p[2] for p in parts)/2
+        if tag in ('msub', 'msup', 'msubsup'):
+            scripts = [extent(child, scale*.7) for child in children[1:]]
+            return parts[0][0]+max(p[0] for p in scripts), parts[0][1]+(scripts[-1][1]*.6 if tag!='msub' else 0), parts[0][2]+(scripts[0][1]*.6 if tag!='msup' else 0)
+        if tag in ('msqrt', 'mroot'):
+            return sum(p[0] for p in parts)+size*scale*.6, max(p[1] for p in parts)+size*scale*.15, max(p[2] for p in parts)
+        return sum(p[0] for p in parts), max(p[1] for p in parts), max(p[2] for p in parts)
+    advance, ascent, descent = extent(root)
+    return {'advance_pt': advance, 'ink_box_pt': [0, -ascent, advance, descent],
+            'ascent_pt': ascent, 'descent_pt': descent, 'line_height_pt': ascent+descent,
+            'font': face['font'], 'missing_characters': '', 'uncertain': True,
+            'shaping': 'MathML structural estimate; OMML requires rendered verification'}
 
 
 def _q(ns: str, tag: str) -> str:

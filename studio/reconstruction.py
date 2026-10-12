@@ -362,77 +362,13 @@ def _text_class(char:str)->str|None:
 
 
 def _split_mixed_script_line(text:str,box:list[float])->list[dict]:
-    """Split one OCR line into adjacent boxes with one writing system per box."""
-    value=str(text or '').strip()
-    if not value:return []
-    formula_spans=[]
-    for match in _FORMULA_SPAN.finditer(value):
-        span=match.group(0)
-        operators=re.findall(r'[=+\-*/×÷≤≥<>]',span)
-        operands=[part.strip() for part in re.split(r'[=+\-*/×÷≤≥<>]',span) if part.strip()]
-        variable_arithmetic=(len(operators)==1 and operators[0] in '+-' and
-                             (re.search(r'\s[+-]\s',span) or all(re.fullmatch(r'[A-Za-z]{1,2}',part) for part in operands)))
-        # A page marker such as "1 / 12" is ordinary Latin/numeric text, not
-        # a math expression. Keep it in the same font class as other digits.
-        page_fraction=bool(re.fullmatch(r'\d+\s*/\s*\d+',span))
-        if (span.startswith(('\\frac','\\sum','\\int','\\sqrt','\\alpha','\\beta','\\gamma','\\theta','\\pi','\\sigma','\\(', '\\[', '$')) or
-            (not page_fraction and any(op in span for op in '=^*/×÷≤≥<>')) or
-            len(operators)>=2 or variable_arithmetic):
-            formula_spans.append((match.start(),match.end()))
-    classes=[None]*len(value)
-    for start,end in formula_spans:
-        for i in range(start,end):classes[i]='formula'
-    for i,char in enumerate(value):
-        if classes[i] is None:classes[i]=_text_class(char)
-    # Attach spaces and punctuation to the closest text run. Opening marks
-    # travel with the following run; closing marks travel with the preceding.
-    opening=set('([{（【《「『“‘')
-    for i,kind in enumerate(classes):
-        if kind is not None:continue
-        before=next((classes[j] for j in range(i-1,-1,-1) if classes[j] is not None),None)
-        after=next((classes[j] for j in range(i+1,len(classes)) if classes[j] is not None),None)
-        char=value[i]
-        classes[i]=(after if char in opening and after else before if before else after)
-    chunks=[]
-    for char,kind in zip(value,classes):
-        kind=kind or 'latin'
-        if chunks and chunks[-1]['text_class']==kind:chunks[-1]['text']+=char
-        else:chunks.append({'text_class':kind,'text':char})
-    chunks=[chunk for chunk in chunks if chunk['text'].strip()]
-    if len(chunks)<=1:return [{'text':value,'box':list(box),'text_class':chunks[0]['text_class'] if chunks else 'latin'}]
-    def advance(char:str)->float:
-        if ord(char)>=0x2E80:return 1.0
-        if char.isspace():return .30
-        if char.isupper():return .64
-        if char.isdigit():return .56
-        if char.isalpha():return .54
-        return .40
-    weights=[sum(advance(char) for char in chunk['text']) for chunk in chunks]
-    total=max(sum(weights),1e-9);x,y,w,h=map(float,box);cursor=x;result=[]
-    for i,(chunk,weight) in enumerate(zip(chunks,weights)):
-        width=x+w-cursor if i==len(chunks)-1 else w*weight/total
-        result.append({'text':chunk['text'],'text_class':chunk['text_class'],
-                       'box':[cursor,y,max(width,1e-6),h]})
-        cursor+=width
-    return result
+    from .text_layout import split_runs
+    return [{**r,'box':list(box)} for r in split_runs(text)]
 
 
 def _split_mixed_script_regions(regions:list[dict])->list[dict]:
-    output=[]
-    for region in regions:
-        original_box=list(region.get('box') or [0,0,0,0]);original_text=str(region.get('text') or '')
-        lines=original_text.replace('\r\n','\n').replace('\r','\n').split('\n')
-        line_h=original_box[3]/max(1,len(lines))
-        for line_index,line in enumerate(lines):
-            line=line.strip()
-            if not line:continue
-            source_box=[original_box[0],original_box[1]+line_index*line_h,original_box[2],line_h]
-            source_group=str(region.get('source_group') or f'ocr-line-{len(output):04d}-{line_index:02d}')
-            for piece in _split_mixed_script_line(line,source_box):
-                output.append({**region,'text':piece['text'],'box':piece['box'],
-                               'source_text':line,'source_box':source_box,
-                               'source_group':source_group,'text_class':piece['text_class']})
-    return output
+    from .text_layout import split_regions
+    return split_regions(regions)
 
 
 def detect_text(p:dict,sid:str,backend='auto') -> dict:
@@ -449,7 +385,7 @@ def detect_text(p:dict,sid:str,backend='auto') -> dict:
     detected=_rapidocr_multiscale(im,full_upscale=True) if backend=='rapidocr' else _tesseract(im)
     detected=[r for r in detected if r['text'] and r['box'][2]>.001 and r['box'][3]>.001]
     detected=_split_mixed_script_regions(detected)
-    detected=sorted(detected,key=lambda r:(round(r['box'][1]/0.025),r['box'][0]))[:350]
+    detected=sorted(detected,key=lambda r:(round(r['box'][1]/0.025),r['box'][0],r.get('run_order',0)))
     for i,r in enumerate(detected,1):
         r['id']=f'text_{i:03d}'
         r['role']='custom'
@@ -523,21 +459,23 @@ def detect_primitive_candidates(source:Path,limit=24) -> list[dict]:
 
 def persist_regions(p:dict,sid:str,regions:list[dict]) -> dict:
     source=source_for(p,sid)
-    if len(regions)>350:raise ValueError('最多350个文字区域')
+    if len(regions)>1000:raise ValueError('最多1000个文字区域；未截断，请分批复核')
     normalized=[]
     for i,r in enumerate(regions):
         if not isinstance(r,dict):raise ValueError('区域格式错误')
         txt=r.get('text','')
         if not isinstance(txt,str) or len(txt)>1600:raise ValueError('文字必须为最多1600字符的字符串')
-        item={'id':f'text_{i+1:03d}','text':txt,'box':valid_box(r.get('box')),
+        item={'id':str(r.get('id') or f'text_{i+1:03d}'),'text':txt,'box':valid_box(r.get('box')),
               'confidence':float(r.get('confidence') or 0),'role':r.get('role','custom'),
               'editable':bool(r.get('editable', False))}
         # Keep script-split provenance across the review/save/reload boundary.
         # Without it, confirmation can no longer reflow chunks as one line.
-        for key in ('source_text','source_group'):
+        for key in ('source_text','source_group','block_id','line_id','run_id','migration_warning','review_reason'):
             value=r.get(key)
             if isinstance(value,str) and value and len(value)<=1600:
                 item[key]=value
+        for key in ('char_start','char_end','run_order','whitespace','ocr_box','text_layout','layout_managed','layout_locks','kind'):
+            if key in r:item[key]=r[key]
         source_box=r.get('source_box')
         if isinstance(source_box,(list,tuple)) and len(source_box)==4:
             try:item['source_box']=valid_box(source_box)
@@ -750,7 +688,7 @@ def extract_asset(p:dict,sid:str,box:list[float],make_transparent=False,toleranc
             'notice':'仅裁剪已可见像素。复杂对象仍是独立位图，不代表内部细节可编辑。'}
 
 
-def compare_render(p:dict,sid:str,preview_path:Path) -> dict:
+def compare_render(p:dict,sid:str,preview_path:Path,output_dir:Path|None=None) -> dict:
     target=Image.open(source_for(p,sid)).convert('RGB')
     actual=Image.open(preview_path).convert('RGB').resize(target.size,Image.Resampling.LANCZOS)
     a=np.asarray(target).astype(np.int16);b=np.asarray(actual).astype(np.int16)
@@ -765,7 +703,7 @@ def compare_render(p:dict,sid:str,preview_path:Path) -> dict:
         text_regions.append({'id':str(element.get('id',''))[:64],
             'box':element['box'],'mae_0_255':round(float(np.mean(diff[y1:y2,x1:x2])),3)})
     heat=cv2.applyColorMap(np.clip(diff*3,0,255).astype(np.uint8),cv2.COLORMAP_TURBO)
-    folder=lab_dir(p['id']);name=f'{sid}_diff.png'
+    folder=output_dir or lab_dir(p['id']);folder.mkdir(parents=True,exist_ok=True);name=f'{sid}_diff.png'
     Image.fromarray(cv2.cvtColor(heat,cv2.COLOR_BGR2RGB)).save(folder/name)
     objective=score_render_fidelity(p,sid,target,actual)
     report={'slide_id':sid,'mae_0_255':round(float(np.mean(diff)),3),'source_size':list(target.size),
@@ -937,7 +875,7 @@ def score_render_fidelity(p:dict,sid:str,target:Image.Image,actual:Image.Image) 
     # objects. Resolve each region to the closest native text object using both
     # normalized text and slide position so the calibration agent receives IDs
     # it can actually edit (repeated labels such as "Token 1" stay distinct).
-    source_slide=find_slide(p,sid)
+    source_slide=next((s for s in p.get('slides',[]) if s['id']==sid),{'elements':[]})
     native_text=[e for e in source_slide.get('elements',[])
                  if e.get('kind') in ('text','formula') and str(e.get('text','')).strip()]
     def native_target(ref:dict) -> dict|None:
@@ -1077,7 +1015,7 @@ def score_render_fidelity(p:dict,sid:str,target:Image.Image,actual:Image.Image) 
     layout_warnings=[]
     try:
         from .quality import _estimated_lines
-        source_slide=find_slide(p,sid)
+        source_slide=next((s for s in p.get('slides',[]) if s['id']==sid),{'elements':[]})
         for element in source_slide.get('elements',[]):
             if element.get('kind')!='text' or not str(element.get('text') or '').strip():continue
             x,y,w,h=element['box'];style=element.get('style') or {};font_size=float(style.get('size',18))
@@ -1095,7 +1033,7 @@ def score_render_fidelity(p:dict,sid:str,target:Image.Image,actual:Image.Image) 
     # measured glyph box remains inside its actual PPT text frame is direct
     # render evidence that the estimated overflow did not occur.
     if layout_warnings:
-        source_slide=find_slide(p,sid)
+        source_slide=next((s for s in p.get('slides',[]) if s['id']==sid),{'elements':[]})
         elements={str(e.get('id')):e for e in source_slide.get('elements',[])}
         verified_warnings=[]
         for warning in layout_warnings:

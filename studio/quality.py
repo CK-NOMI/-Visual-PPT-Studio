@@ -13,6 +13,20 @@ def intersects(a,b):
     if x2<=x1 or y2<=y1:return 0
     return (x2-x1)*(y2-y1)
 
+
+def visible_glyph_box(element):
+    """Predict ink bounds, not transparent frame capacity; render checks remain separate."""
+    layout=element.get('text_layout') or {}
+    if layout.get('version')==2 and layout.get('ink_box_pt'):
+        x,y,w,h=element['box'];st=element.get('style') or {};ink=layout['ink_box_pt']
+        baseline=layout['baseline_pt']
+        left=float(st.get('margin_left_pt',0));right=float(st.get('margin_right_pt',0))
+        offset=(w*960-left-right-layout.get('advance_pt',0))*{'left':0,'center':.5,'right':1}.get(st.get('align','left'),0)
+        return [(x*960+left+offset+ink[0])/960,
+                (baseline+ink[1])/540,max(.00001,ink[2]-ink[0])/960,
+                max(.00001,ink[3]-ink[1])/540]
+    return element['box']
+
 def _luminance(rgb):
     vals=[]
     for v in rgb:
@@ -73,7 +87,7 @@ def audit(project):
                 region=np.ones((144,256),dtype=bool)
                 for e in els:
                     if e['kind']=='text':
-                        ex,ey,ew,eh=e['box']
+                        ex,ey,ew,eh=visible_glyph_box(e)
                         # Exclude text areas: two images SHOULD differ here.
                         x0=max(0,int((ex-.02)*256));y0=max(0,int((ey-.02)*144))
                         x1=min(256,int((ex+ew+.02)*256));y1=min(144,int((ey+eh+.02)*144))
@@ -95,10 +109,14 @@ def audit(project):
                 available_h=h*7.5*72-float(st.get('margin_top_pt',0))-float(st.get('margin_bottom_pt',0))
                 lines=_estimated_lines(e.get('text',''),available_w,fontsize,st.get('char_spacing_pt',0))
                 paragraph_gaps=max(0,str(e.get('text','')).count('\n'))*float(st.get('paragraph_space_after_pt',0))
-                if lines*fontsize*1.22*float(st.get('line_spacing',1.05))+paragraph_gaps>available_h*1.15:
+                if e.get('text_layout',{}).get('version')==2:
+                    for issue in e['text_layout'].get('layout_warning',[]):
+                        issues.append(('warning',f'{e["id"]} 布局诊断：{issue}'))
+                elif lines*fontsize*1.22*float(st.get('line_spacing',1.05))+paragraph_gaps>available_h*1.15:
                     issues.append(('warning',f'{e["id"]} 文本可能溢出：建议扩大文本框或缩小字号'))
                 if clean_img and all(v>=0 for v in (x,y,w,h)) and x+w<=1.0 and y+h<=1.0:
                     # Sample actual cleaned background under the text area.
+                    x,y,w,h=visible_glyph_box(e)
                     imw,imh=clean_img.size
                     sample=clean_img.crop((int(x*imw),int(y*imh),max(int((x+w)*imw),int(x*imw)+1),max(int((y+h)*imh),int(y*imh)+1)))
                     sample.thumbnail((45,35))
@@ -110,9 +128,10 @@ def audit(project):
         texts=[e for e in els if e['kind']=='text']
         for i,a in enumerate(texts):
             for b in texts[i+1:]:
-                overlap=intersects(a['box'],b['box'])
-                if overlap>0.03*min(a['box'][2]*a['box'][3],b['box'][2]*b['box'][3]):
-                    issues.append(('warning',f'{a["id"]} 与 {b["id"]} 的文本框可能重叠'))
+                ab,bb=visible_glyph_box(a),visible_glyph_box(b)
+                overlap=intersects(ab,bb)
+                if overlap>0.03*min(ab[2]*ab[3],bb[2]*bb[3]):
+                    issues.append(('warning',f'{a["id"]} 与 {b["id"]} 的可见文字可能重叠'))
         for sev,msg in issues:
             (errors if sev=='error' else warnings).append({'slide_id':sid,'message':msg})
         slides_report.append({'slide_id':sid,'errors':[m for k,m in issues if k=='error'],
@@ -160,3 +179,46 @@ def check_native_text(project,pptx_path):
                         'expected_equation_count':len(equations),'equations_pass':formula_pass,
                         'pass':not missing and formula_pass})
     return {'ok':all(x['pass'] for x in reports),'slides':reports}
+
+
+def check_saved_layout(project,pptx_path):
+    """Exact export contract, separate from loose OCR semantic matching."""
+    from pptx import Presentation
+    from pptx.oxml.ns import qn
+    pp=Presentation(pptx_path);pages=[]
+    for source,slide in zip(project['slides'],pp.slides):
+        by_name={}
+        for sh in slide.shapes:
+            if sh.has_text_frame:by_name.setdefault(sh.name,[]).append(sh)
+        expected={e['id']:e for e in source['elements'] if e['kind'] in ('text','formula') and str(e.get('text','')).strip()}
+        differences=[]
+        for name,shapes in by_name.items():
+            if name not in expected and any(s.text.strip() for s in shapes):
+                differences.append({'id':name,'type':'unexpected_object'})
+            if len(shapes)>1:differences.append({'id':name,'type':'duplicate_object','count':len(shapes)})
+        for id_,e in expected.items():
+            shapes=by_name.get(id_,[])
+            if len(shapes)!=1:
+                differences.append({'id':id_,'type':'missing_or_duplicate_object'});continue
+            sh=shapes[0];tf=sh.text_frame
+            if e['kind']=='text' and sh.text!=e['text']:
+                differences.append({'id':id_,'type':'exact_text_or_whitespace_mismatch','expected':e['text'],'actual':sh.text})
+            actual=[sh.left/pp.slide_width,sh.top/pp.slide_height,sh.width/pp.slide_width,sh.height/pp.slide_height]
+            if any(abs(a-b)>1e-6 for a,b in zip(actual,e['box'])):
+                differences.append({'id':id_,'type':'export_changed_box','expected':e['box'],'actual':actual})
+            if tf.word_wrap is not False or tf._txBody.bodyPr.find(qn('a:noAutofit')) is None:
+                differences.append({'id':id_,'type':'wrap_or_autofit_enabled'})
+            if e['kind']=='text':
+                for p in tf.paragraphs:
+                    for run in p.runs:
+                        size=run.font.size.pt if run.font.size else None
+                        if size is None or abs(size-float(e.get('style',{}).get('size',18)))>.011:
+                            differences.append({'id':id_,'type':'export_changed_font_size','actual':size})
+                st=e.get('style',{})
+                for key,margin in [('margin_left_pt',tf.margin_left),('margin_right_pt',tf.margin_right),
+                                   ('margin_top_pt',tf.margin_top),('margin_bottom_pt',tf.margin_bottom)]:
+                    if abs(margin.pt-float(st.get(key,0)))>.011:
+                        differences.append({'id':id_,'type':'export_changed_margin','field':key})
+        pages.append({'slide_id':source['id'],'pass':not differences,'differences':differences})
+    return {'ok':len(pp.slides)==len(project['slides']) and all(p['pass'] for p in pages),
+            'pages':pages,'meaning':'精确文本/空白、对象数量、坐标、字号、边距及禁换行导出契约；WPS视觉验收另行记录。'}

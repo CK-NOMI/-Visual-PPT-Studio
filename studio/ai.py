@@ -44,6 +44,21 @@ def _calibration_layout_context(project, slide, current):
     # one lane. Global same-role/same-size matching pulled unrelated labels
     # from diagrams into a list and gave DeepSeek contradictory targets.
     groups=[]
+    # Two same-level card headings are a real peer group when the source map
+    # explicitly identifies both as titles on the same visual row.
+    try:
+        reference=rc.get_regions(project,slide['id']) or {}
+        titles=[r for r in reference.get('regions',[]) if r.get('role')=='title']
+        title_items=[item for item in text_items if any(r.get('text')==item['content'] for r in titles)]
+        for index,a in enumerate(title_items):
+            peers=[b for b in title_items[index+1:] if abs(a['box'][1]-b['box'][1])<=.012
+                   and abs(float(a.get('style',{}).get('size',18))-float(b.get('style',{}).get('size',18)))<=1]
+            if peers:
+                groups.append({'level':'source_confirmed_title_row','reference_size_pt':a.get('style',{}).get('size'),
+                               'members':[{'id':i['id'],'text':i['content']} for i in [a,*peers]]})
+                break
+    except (KeyError,ValueError,FileNotFoundError):
+        pass
     # Detect adjacent, left-aligned body rows directly from the editable scene.
     # OCR can give each row a slightly different x/height/font estimate even
     # when the source is a single bulleted list; pass one shared target to
@@ -611,6 +626,7 @@ async def calibrate_text_layout(project,slide,design_path,clean_path,render_path
     feedback_payload=(json.dumps(optimization_feedback,ensure_ascii=False,separators=(',',':'))
                       if isinstance(optimization_feedback,(dict,list)) else str(optimization_feedback or ''))
     prompt=(
+        '任务：对照原始设计稿与当前PPTX真实渲染，最终需在Mac WPS中验收。不得重写、简化、翻译对象原文；不得为了消除换行而把字重调细。文本框的宽度/高度和位置由统一布局引擎计算，校准只提供候选，不能代替字体度量。'
         '坐标与可编辑框必须区分：程序差异中的 expected_box/actual_box 是图片OCR测得的可见字形边界，editable_box 才是PPT形状的真实文本框；对象清单中的 box 也是可编辑框。不得把 OCR 字形边界直接复制到 correction.box。字形中心偏移可用于推导框的 x/y；字形宽高偏差优先用字号、字体或字距验证，单纯改框宽高通常不会改变字形尺寸且可能造成换行。先核对候选框与当前 editable_box，再提出最小改动。'
         '小字不得漏检：检查范围不限于示例，凡是原稿中可见的微小文字都必须纳入，包括页码/页数、页脚、卡片编号、图注、图表刻度/标签、脚注、公式上下标、Token小标签、角落文字和低对比浅色字。请主动放大查看原稿与真实渲染的各个区域，不得假设OCR清单完整，也不能因字号小、颜色浅或OCR未识别就忽略。程序报告missing_text时，先在现有对象清单中查找文字内容相同/相近的对象：若对象已经存在但图C看不见（常见原因是字色与圆底同色、透明/字号过小或框偏移），必须直接为这个已有对象提出可执行的颜色/字重/尺寸/位置修正；只有清单确实没有该文字对象时，才在issues指出需要回到重建流程补建独立文字框，不可伪造对象ID。'
         '逐对象比较A与C：字体家族及语言适配、字号层级、颜色、字重/斜体/对齐、字间距、行距、段落前后距、文本框内边距、垂直对齐、框位置/尺寸、裁切/溢出/换行、重叠和公式外观。字间距对照字形疏密/字符间留白；行距对照相邻基线距离；内边距对照文字相对文本框边缘的留白；垂直对齐对照文字在框内的顶部/居中/底部位置。必须结合图C真实渲染判断参数效果，不可凭参数数值猜测。'

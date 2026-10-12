@@ -26,13 +26,15 @@ from .core import (ROOT, DATA, FILENAME_RE, STYLE_PRESETS, all_prompts,
                    build_prompt_zip, create_project, find_slide, list_projects,
                    project_dir, read_project, save_project, status, update_slide,
                    write_image, safe_json_write)
-from .quality import audit, check_native_text
+from .quality import audit, check_native_text, check_saved_layout
 from .pptx_native import build as build_python_pptx
 from .ai import (AIError, analyze_visual, analyze_structure, calibrate_text_layout,
                  configured_api_key, generate_image_prompts, generate_plan,
                  generate_style, review_image_pair, refine_clean_prompt, review_visual, call_deepseek)
 from . import reconstruction as rc
 from .equations import to_mathml
+from .text_layout import layout_elements, layout_project
+from .render_acceptance import wps_environment, layout_manifest, import_wps_render
 
 # Keep API keys in environment only, never in project.json/zip/logs.
 def load_local_env():
@@ -45,6 +47,29 @@ def load_local_env():
                 os.environ[a.strip()]=b.strip().strip('"').strip("'")
 load_local_env()
 app=FastAPI(title='Visual PPT Studio',version='0.3.0',description='Original local-first numbered design-to-editable-PPTX workbench')
+app.mount('/static/fonts',StaticFiles(directory=ROOT/'studio'/'assets'/'fonts'),name='fonts')
+
+@app.get('/api/projects/{pid}/fonts/{identity}.ttf')
+def project_font_file(pid:str,identity:str):
+    """Only serve a registered face used by this project, never arbitrary paths."""
+    from fontTools.ttLib import TTFont
+    p=p_or_404(pid)
+    if not re.fullmatch(r'[0-9a-f]{16}',identity):raise HTTPException(404,'非法字体编号')
+    face=next((e.get('text_layout',{}).get('font') for s in p['slides'] for e in s.get('elements',[])
+               if e.get('text_layout',{}).get('font',{}).get('file_identity')==identity),None)
+    if not face:
+        # A pure candidate has not been persisted. Restrict it to our actual registry.
+        from .fonts import font_registry
+        for candidate in font_registry():
+            path=Path(candidate['path'])
+            key=hashlib.sha256((str(path)+str(path.stat().st_mtime_ns)+str(candidate['index'])).encode()).hexdigest()[:16]
+            if key==identity:face=candidate;break
+    if not face:raise HTTPException(404,'字体文件不存在')
+    cache=project_dir(pid)/'build'/'browser_fonts';cache.mkdir(exist_ok=True)
+    file=cache/(identity+'.ttf')
+    if not file.is_file():
+        with TTFont(face['path'],fontNumber=face['index']) as font:font.save(file)
+    return FileResponse(file,media_type='font/ttf',headers={'Cache-Control':'public, max-age=31536000, immutable'})
 
 class ProjectCreate(BaseModel):
     title:str=Field(min_length=1,max_length=180)
@@ -210,6 +235,22 @@ def slide_save(pid:str,sid:str,changes:dict=Body(...)):
     try:return update_slide(p,sid,changes)
     except Exception as e:fail(e)
 
+@app.post('/api/projects/{pid}/slides/{sid}/text-layout')
+def text_layout_candidate(pid:str,sid:str,body:dict=Body(...)):
+    """Pure proposal: one layout for browser confirmation and subsequent PPTX."""
+    p=p_or_404(pid)
+    try:
+        s=find_slide(p,sid)
+        regions=body.get('regions')
+        elements=body.get('elements',s['elements']) if regions is None else [
+            {**r,'kind':r.get('kind','text')} for r in regions]
+        if not isinstance(elements,list) or len(elements)>1000:
+            raise ValueError('需要最多1000个对象的列表')
+        candidate,report=layout_elements(elements,p['design'],sid,s['elements'])
+        return {'elements':candidate,'regions':candidate if regions is not None else None,
+                'layout':report,'saved':False,'notice':'统一字体测量的布局候选，确认保存后用于预览和导出；未完成 Office 验收。'}
+    except Exception as e:fail(e)
+
 @app.post('/api/projects/{pid}/plan/offline')
 def offline_plan(pid:str):
     p=p_or_404(pid)
@@ -234,6 +275,8 @@ async def ai_style(pid:str,request:AIRequest):
 @app.put('/api/projects/{pid}/design')
 def design_save(pid:str, body:dict=Body(...)):
     p=p_or_404(pid)
+    from copy import deepcopy
+    previous_slides=deepcopy(p['slides'])
     old_design=dict(p['design'])
     for k in ['bg','ink','accent','muted']:
         if k in body:
@@ -250,6 +293,8 @@ def design_save(pid:str, body:dict=Body(...)):
                 for target in ('color','fill','stroke'):
                     if st.get(target)==old_design[k]:st[target]=p['design'][k]
             if st.get('font')==old_design['font']:st['font']=p['design']['font']
+    for sl,previous in zip(p['slides'],previous_slides):
+        sl['elements'],sl['text_structure']=layout_elements(sl['elements'],p['design'],sl['id'],previous['elements'])
     save_project(p);return p['design']
 
 @app.get('/api/projects/{pid}/prompts')
@@ -675,9 +720,11 @@ def render_deck(pid:str,mode:str='editable'):
         stage=Path(temp);out=stage/('presentation_'+mode+'.pptx')
         backend=os.getenv('PPT_RENDERER','python').lower()
         has_formulas=mode=='editable' and any(e.get('kind')=='formula' for s in p['slides'] for e in s.get('elements',[]))
-        if backend=='python' or has_formulas:
+        has_layout_v2=mode=='editable' and any(e.get('text_layout',{}).get('version')==2 for s in p['slides'] for e in s.get('elements',[]))
+        if backend=='python' or has_formulas or has_layout_v2:
             builder=build_python_pptx(p,out,mode)
             if has_formulas and backend!='python':builder['notice']='公式页强制使用 python-pptx 后端，以保留 PowerPoint 原生 OMML 数学对象。'
+            elif has_layout_v2 and backend!='python':builder['notice']='统一布局 v2 使用 python-pptx 精确写入已确认参数；保留 Node 后端用于旧场景。'
         elif backend=='node':
             cmd=['node',str(ROOT/'renderer'/'render.js'),str(project_dir(pid)/'project.json'),str(out),mode]
             r=subprocess.run(cmd,capture_output=True,text=True,timeout=90,cwd=ROOT)
@@ -686,12 +733,18 @@ def render_deck(pid:str,mode:str='editable'):
         else:raise ValueError('PPT_RENDERER仅允许 python 或 node')
         if not out.exists():raise ValueError('导出文件未创建')
         native=check_native_text(p,out) if mode=='editable' else {'ok':None,'notice':'栅格模式不保证文字可编辑'}
+        layout_check=check_saved_layout(p,out) if mode=='editable' else {'ok':None}
+        if mode=='editable' and not layout_check['ok']:
+            raise ValueError('导出与保存的布局不一致：'+str(layout_check['pages']))
         if mode=='editable' and not native['ok']:
             raise ValueError('导出后原生文字完整性/公式校验失败（可能缺字或内容不一致），拒绝标记成功：'+str(native['slides']))
         artifact_sha256=_sha256_file(out)
         report={'filename':None,'mode':mode,'size':out.stat().st_size,'artifact_sha256':artifact_sha256,'native_text':native,
                 'previews':[],'visual_comparisons':[],'pdf':None,'render_warning':None,'project_revision':p['revision'],'qa':q,'builder':builder,
-                'preview_renderer':None,'coverage':[rc.reconstruction_coverage(p,s['id']) for s in p['slides'] if s.get('images',{}).get('design')]}
+                'preview_renderer':None,'stage_visual_renderer':'Chromium browser','compatibility_target':'WPS Office for Mac',
+                'wps_visual_verified':False,'wps_editability_verified':False,'saved_layout_check':layout_check,
+                'layout_manifest':layout_manifest(p,mode),
+                'coverage':[rc.reconstruction_coverage(p,s['id']) for s in p['slides'] if s.get('images',{}).get('design')]}
         lo=office_renderer_binary()
         if lo and os.getenv('PPT_PREVIEW_DISABLE','0')!='1':
             with tempfile.TemporaryDirectory(prefix='ppt-soffice-') as render_tmp:
@@ -734,12 +787,52 @@ def render_deck(pid:str,mode:str='editable'):
             raise ValueError('导出期间项目内容发生变化；本次文件未发布，请重新导出当前版本。')
         for src,dst in final_files:os.replace(src,dst)
         safe_json_write(build/f'report_{mode}.json',report)
+        # Backward-compatible local name points at the immutable version. HTTP
+        # downloads still enforce the current revision and hash first.
+        alias=build/f'presentation_{mode}.pptx';temp_alias=build/f'.presentation_{mode}.link'
+        temp_alias.unlink(missing_ok=True);temp_alias.symlink_to(report['filename']);os.replace(temp_alias,alias)
         return report
 
 @app.post('/api/projects/{pid}/export')
 def export(pid:str,mode:str='editable'):
     try:return render_deck(pid,mode)
     except Exception as e:fail(e)
+
+@app.get('/api/wps-environment')
+def get_wps_environment():return wps_environment()
+
+@app.post('/api/projects/{pid}/wps-render')
+async def upload_wps_render(pid:str,file:UploadFile=File(...),artifact_sha256:str=Form(...),
+                            slide_id:str|None=Form(None),wps_version:str=Form(''),crop_json:str=Form('')):
+    p=p_or_404(pid)
+    try:
+        report=_current_export_report(pid,p,'editable')
+        result=import_wps_render(p,report,await file.read(50*1024*1024+1),file.filename,
+                                artifact_sha256,slide_id,wps_version,json.loads(crop_json) if crop_json else None)
+        return result
+    except Exception as e:fail(e)
+
+@app.get('/api/projects/{pid}/wps-render/{import_id}')
+def read_wps_render(pid:str,import_id:str):
+    p=p_or_404(pid)
+    if not re.fullmatch(r'[0-9a-f]{16}',import_id):raise HTTPException(404,'非法验收编号')
+    path=project_dir(pid)/'build'/'wps_acceptance'/import_id/'report.json'
+    if not path.is_file():raise HTTPException(404,'WPS导入报告不存在')
+    result=json.loads(path.read_text(encoding='utf-8'))
+    try:
+        export=_current_export_report(pid,p)
+        result['current']=result['artifact_sha256']==export['artifact_sha256'] and result['project_revision']==p['revision']
+    except ValueError:result['current']=False
+    return result
+
+@app.get('/wps-preview/{pid}/{import_id}/{filename}')
+def wps_preview(pid:str,import_id:str,filename:str):
+    p_or_404(pid)
+    if not re.fullmatch(r'[0-9a-f]{16}',import_id) or not re.fullmatch(r'S\d{3}(?:_diff)?\.png',filename):
+        raise HTTPException(404,'非法验收图片')
+    path=project_dir(pid)/'build'/'wps_acceptance'/import_id/filename
+    if not path.is_file():raise HTTPException(404,'验收图片不存在')
+    return FileResponse(path,headers={'Cache-Control':'no-cache'})
 
 @app.get('/build/{pid}/{filename}')
 def build_media(pid:str,filename:str):
@@ -761,7 +854,9 @@ def build_media(pid:str,filename:str):
             mode='raster' if 'raster' in filename else 'editable'
             try:report=_current_export_report(pid,p_or_404(pid),mode)
             except ValueError as e:raise HTTPException(409,str(e))
-            if filename not in {report.get('filename'),report.get('pdf'),*(report.get('previews') or [])}:
+            if filename==f'presentation_{mode}.pptx':
+                f=project_dir(pid)/'build'/report['filename']
+            elif filename not in {report.get('filename'),report.get('pdf'),*(report.get('previews') or [])}:
                 raise HTTPException(409,'此文件不是当前报告对应的PPTX/预览，请刷新页面并重新导出。')
         return FileResponse(f,filename=(filename if filename.endswith(('.pptx','.pdf','.zip')) else None),headers={'Cache-Control':'no-cache'})
     except HTTPException:raise

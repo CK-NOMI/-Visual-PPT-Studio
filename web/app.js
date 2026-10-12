@@ -31,17 +31,54 @@ function slide(){if(!state.project)return null;return state.project.slides.find(
 function murl(name){return name?`/media/${pid()}/${encodeURIComponent(name)}?rev=${state.project.revision}`:''}
 function promptList(){return state.prompts?.prompts||[]}
 function aiReq(){return {api_key:$('apiKey').value.trim()||null,model:$('modelName').value.trim()||'deepseek-flash'}}
+const loadedFontFaces=new Map();
+state.fontStatus={};
+async function ensureProjectFonts(project){
+ const faces=project.slides.flatMap(s=>(s.elements||[]).map(e=>e.text_layout?.font)).filter(Boolean);
+ await Promise.all([...new Map(faces.map(f=>[`${f.file_identity}:${f.requested_weight}`,f])).values()].map(async f=>{
+  const key=`${f.file_identity}:${f.requested_weight}`,family=`StudioFace_${f.file_identity}`;
+  if(!loadedFontFaces.has(key))loadedFontFaces.set(key,(async()=>{
+   try{const face=new FontFace(family,`url(/api/projects/${project.id}/fonts/${f.file_identity}.ttf)`,{weight:String(f.requested_weight||400),style:f.italic?'italic':'normal'});await face.load();document.fonts.add(face);return {family,status:face.status,source:f.path,file_identity:f.file_identity,fallback:f.fallback,requested:f.requested_family,actual:f.actual_family};}
+   catch(error){return {family:f.actual_family,status:'error',error:error.message,fallback:true};}
+  })());
+  state.fontStatus[key]=await loadedFontFaces.get(key);
+ }));
+ await document.fonts.ready;
+}
+function browserFontFamily(element,fallback){const f=element.text_layout?.font;return f&&state.fontStatus[`${f.file_identity}:${f.requested_weight}`]?.status==='loaded'?`StudioFace_${f.file_identity}`:fallback;}
+function alignGlyphBaselines(){
+ const stage=$('stage'),rect=stage.getBoundingClientRect();if(!rect.width)return;
+ for(const e of state.elements){const layout=e.text_layout;if(e.kind!=='text'||!layout)continue;
+  const node=[...stage.querySelectorAll('[data-el]')].find(n=>n.dataset.el===e.id),line=node?.querySelector('.glyph-line'),marker=node?.querySelector('.baseline-marker');if(!line||!marker)continue;
+  line.style.transform='';const target=rect.top+layout.baseline_pt*rect.width/960;
+  line.style.transform=`translateY(${target-marker.getBoundingClientRect().top}px)`;
+ }
+}
 function renderProjects(){
  $('projectList').innerHTML=state.projects.map(p=>`<button class="project-item ${state.project?.id===p.id?'active':''}" data-pid="${p.id}"><strong>${esc(p.title)}</strong><small>${p.pages}页 · 设计图${p.images}张 · ${p.locked?'已锁定':'未锁定'}</small></button>`).join('')||'<p class="hint">还没有项目</p>';
  $('projectList').querySelectorAll('[data-pid]').forEach(x=>x.addEventListener('click',()=>run(()=>loadProject(x.dataset.pid))));
  $('batchProjects').innerHTML=state.projects.map(p=>`<div class="checkbox-row"><input type="checkbox" class="batch-check" value="${p.id}" ${p.locked?'checked':''}><label>${esc(p.title)} <small>(${p.pages}页，${p.locked?'已锁定':'未锁定'})</small></label></div>`).join('')||'暂无项目';
 }
 async function refreshProjects(){state.projects=await api('/api/projects');renderProjects()}
-async function loadProject(id){state.project=await api('/api/projects/'+id);state.sid=state.project.slides[0].id;try{state.uploadUndo=JSON.parse(localStorage.getItem(uploadUndoKey(id))||'null')}catch{state.uploadUndo=null}state.prompts=null;state.aiImagePrompts={};state.pairReports={};state.calibration=null;state.lastReport=null;state.reconstructionPages=[];try{state.lastReport=await api(`/build/${id}/report_editable.json`)}catch{}state.selected=null;state.masks=[];state.elements=[];await refreshProjects();renderEverything();await refreshReconstructionProgress();}
+let projectLoadSerial=0;
+function setProjectLoading(value){state.projectLoading=value;document.body.dataset.projectLoading=String(value);$('saveElements').disabled=value;$('saveSlide').disabled=value;$('autoRebuildPage').disabled=value;}
+async function loadProject(id,preferredSid=null){
+ const serial=++projectLoadSerial;setProjectLoading(true);
+ try{const project=await api('/api/projects/'+id);if(serial!==projectLoadSerial)return;
+  await ensureProjectFonts(project);if(serial!==projectLoadSerial)return;
+  state.project=project;state.sid=project.slides.some(s=>s.id===preferredSid)?preferredSid:project.slides[0].id;
+  try{state.uploadUndo=JSON.parse(localStorage.getItem(uploadUndoKey(id))||'null')}catch{state.uploadUndo=null}
+  state.prompts=null;state.aiImagePrompts={};state.pairReports={};state.calibration=null;state.lastReport=null;state.reconstructionPages=[];
+  try{state.lastReport=await api(`/build/${id}/report_editable.json`)}catch{}
+  if(serial!==projectLoadSerial)return;
+  state.selected=null;state.masks=[];state.elements=[];state.elsSid=null;
+  await refreshProjects();if(serial!==projectLoadSerial)return;
+  renderEverything();await refreshReconstructionProgress();
+ }finally{if(serial===projectLoadSerial){setProjectLoading(false);renderAgentReadiness();}}
+}
 function renderEverything(){
  let p=state.project;if(!p){$('projectTitle').textContent='可编辑 AI PPT 生产台';return;}
  $('projectTitle').textContent=p.title;$('projectSubtitle').textContent=`${p.topic.slice(0,140)} · ${p.audience} · ${p.slides.length}页`;
- $('lockBadge').textContent=p.locked?'● 逐页规划已锁定':'○ 规划尚未锁定';$('lockPlan').textContent=p.locked?'已锁定':'锁定规划';$('lockPlan').disabled=p.locked;
  $('planStats').innerHTML=stat('页面',p.slides.length)+stat('完整设计稿',p.slides.filter(s=>s.images.design).length)+stat('无文字背景',p.slides.filter(s=>s.images.clean).length)+stat('规划状态',p.locked?'已锁定':'可编辑');
  $('uploadStats').innerHTML=stat('已规划',p.slides.length)+stat('设计图',p.slides.filter(s=>s.images.design).length)+stat('无字底图',p.slides.filter(s=>s.images.clean).length)+stat('素材',p.slides.reduce((n,s)=>n+Object.keys(s.images).filter(r=>r.startsWith('asset_')).length,0));
  $('planList').innerHTML=p.slides.map(s=>`<button class="plan-entry ${s.id===state.sid?'active':''}" data-sid="${s.id}"><b>${s.id}</b><div><strong>${esc(s.title||`第${s.number}页 · 待规划`)}</strong><small>${esc(s.intent.slice(0,80))} · ${s.images.design?'◆设计稿':''}${s.images.clean?' ◆底图':''}</small></div></button>`).join('');
@@ -50,10 +87,10 @@ function renderEverything(){
  $('colorBg').value=p.design.bg;$('colorInk').value=p.design.ink;$('colorAccent').value=p.design.accent;$('colorMuted').value=p.design.muted;$('designFont').value=p.design.font;
  $('swatches').innerHTML=['bg','ink','accent','muted'].map(k=>`<div title="${k}: #${p.design[k]}" style="background:#${p.design[k]}"></div>`).join('');
  $('slotSlide').innerHTML=p.slides.map(s=>`<option value="${s.id}" ${s.id===state.sid?'selected':''}>${s.id} · ${esc(s.title||`第${s.number}页 · 待规划`)}</option>`).join('');
- renderAssets();renderCurrentUpload();renderAgentReadiness();renderPrompts();renderEditor();renderQAImages();renderStaleExportStatus();renderPairReport();
+ $('wpsRenderSlide').innerHTML=p.slides.map(s=>`<option value="${s.id}" ${s.id===state.sid?'selected':''}>${s.id}</option>`).join('');renderAssets();renderCurrentUpload();renderAgentReadiness();renderPrompts();renderEditor();renderQAImages();renderStaleExportStatus();renderPairReport();
 }
 const stat=(label,value)=>`<div class="stat"><strong>${esc(value)}</strong><small>${esc(label)}</small></div>`;
-function chooseSlide(sid){if(state.autoCandidateSid&&state.autoCandidateSid!==sid){toast(`请先确认并保存 ${state.autoCandidateSid} 的 Agent 候选，再切换页面`,true);$('slotSlide').value=state.sid;return}state.sid=sid;state.elements=[];state.selected=null;state.masks=[];state.labRegions=[];renderEverything();if(state.tab==='lab')run(labRefresh)}
+function chooseSlide(sid){if(state.projectLoading){toast('项目正在加载，请稍后再切页');return;}if(state.autoCandidateSid&&state.autoCandidateSid!==sid){toast(`请先确认并保存 ${state.autoCandidateSid} 的 Agent 候选，再切换页面`,true);$('slotSlide').value=state.sid;return}state.sid=sid;state.elements=[];state.selected=null;state.masks=[];state.labRegions=[];renderEverything();if(state.tab==='lab')run(labRefresh)}
 function renderAssets(){
  const p=state.project;if(!p)return;
  $('assetTable').innerHTML='<div class="asset-row head"><div>页面</div><div>完整设计稿</div><div>无文字底图</div><div>独立素材</div></div>'+p.slides.map(s=>{
@@ -83,7 +120,7 @@ function renderAgentReadiness(){
  else if(!cleanPairCurrent(s))lines.push(`${s.id} 的无字背景图与当前设计稿未配对或已过期，请重新上传该页 clean 图`);
  else lines.push(`${s.id} 的完整设计稿与无字背景图已就绪，可运行 Agent`);
  const status=state.reconstructionPages.find(x=>x.slide_id===s?.id);if(status?.confirmed)lines.push('本页第二步已确认保存');
- $('agentReadiness').textContent=lines.join('；');$('agentReadiness').className='agent-readiness '+(ready?'good':'warn');$('autoRebuildPage').disabled=!ready;
+ $('agentReadiness').textContent=lines.join('；');$('agentReadiness').className='agent-readiness '+(ready?'good':'warn');$('autoRebuildPage').disabled=state.projectLoading||!ready;
  renderReconstructionProgress();
 }
 function renderReconstructionProgress(){
@@ -107,17 +144,14 @@ function renderPrompts(){
 }
 function selectElement(id){state.selected=id;renderEditor()}
 function selected(){return state.elements.find(e=>e.id===state.selected)}
-function previewFitFontSize(text,boxWidth,baseSize,style,latin,east,stageWidth){
- const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d'),scale=stageWidth/960;
- const tracking=Number(style.char_spacing_pt||0)*scale,available=Math.max(1,boxWidth*stageWidth-(Number(style.margin_left_pt||0)+Number(style.margin_right_pt||0))*scale);
- const lines=String(text||'').split(/\r\n|[\r\n\v\f\u0085\u2028\u2029]/),weight=style.bold?'700':'400';let widest=0;
- for(const line of lines){let width=0;for(const part of (line.match(/[\u2E80-\u9FFF\uAC00-\uD7AF\u3040-\u30FF\uFF00-\uFFEF]+|[^\u2E80-\u9FFF\uAC00-\uD7AF\u3040-\u30FF\uFF00-\uFFEF]+/gu)||[])){const family=EAST_ASIAN_CHAR.test(part)?east:latin;ctx.font=`${weight} ${Math.max(4,baseSize)*scale}px "${String(family||'Arial').replace(/["\\]/g,'')}"`;width+=ctx.measureText(part).width}width+=tracking*Math.max(0,[...line].length-1);widest=Math.max(widest,width)}
- return widest<=available*.985?baseSize:Math.max(4,baseSize*available/Math.max(widest,1)*.975);
-}
 function renderEditor(){
  const p=state.project;if(!p)return;const s=slide();
  if(!state.elements.length||state.elsSid!==s.id){state.elements=JSON.parse(JSON.stringify(s.elements));state.elsSid=s.id;state.selected=state.elements[0]?.id||null;}
  $('stageLabel').textContent=s.id+' · '+state.mode;
+ const textObjects=state.elements.filter(e=>['text','formula'].includes(e.kind)&&String(e.text||'').trim());
+ const uncertain=textObjects.filter(e=>!e.text_layout||e.text_layout.uncertain||state.fontStatus[`${e.text_layout?.font?.file_identity}:${e.text_layout?.font?.requested_weight}`]?.status!=='loaded');
+ $('browserFontStatus').textContent=uncertain.length?`字体/布局需复核：${uncertain.map(e=>`${e.id}：${e.text_layout?.font?.requested_family||e.style?.font||'未测量'} → ${e.text_layout?.font?.actual_family||'未确定'}，${e.text_layout?.uncertain?'度量不确定':'字体未明确加载'}`).join('；')}`:`本页 ${textObjects.length} 个文字/公式对象使用已加载的明确字体文件；网页与PPTX共享已保存布局。`;
+
  $('editorModes').querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('active',x.dataset.mode===state.mode));
  let bg=state.mode==='design'?s.images.design:(state.mode==='mask'?s.images.design:s.images.clean);
  $('stageBg').style.backgroundImage=bg?`url("${murl(bg)}")`:'none';
@@ -130,7 +164,7 @@ function renderEditor(){
  $('stageElements').innerHTML=state.elements.map(e=>{
    const [x,y,w,h]=e.box;const st=e.style||{};
    const pos=`left:${x*100}%;top:${y*100}%;width:${w*100}%;height:${h*100}%;`;
-   if(e.kind==='text'){const latin=st.font||p.design.font||'Arial',east=st.eastAsianFont||(CJK_FONT_FAMILIES.has(latin)?latin:'Noto Sans SC'),baseSize=Math.max(4,Number(st.size||16)),fittedSize=previewFitFontSize(e.text,w,baseSize,st,latin,east,$('stage').clientWidth||1280),paras=String(e.text||'').split('\n').map((line,i)=>`<span style="display:block;margin:${i?Number(st.paragraph_space_before_pt||0)/9.6:0}cqw 0 ${Number(st.paragraph_space_after_pt||0)/9.6}cqw">${textFontRuns(line,latin,east)||'&nbsp;'}</span>`).join('');return `<div class="stage-el ${e.id===state.selected?'selected':''}" data-el="${esc(e.id)}" style="${pos}display:flex;flex-direction:column;justify-content:${({top:'flex-start',middle:'center',bottom:'flex-end'})[st.vertical_align||'top']};padding:${Number(st.margin_top_pt||0)/9.6}cqw ${Number(st.margin_right_pt||0)/9.6}cqw ${Number(st.margin_bottom_pt||0)/9.6}cqw ${Number(st.margin_left_pt||0)/9.6}cqw;font-size:${fittedSize/9.6}cqw;color:${csshex(st.color||p.design.ink)};font-weight:${st.bold?'700':'400'};font-style:${st.italic?'italic':'normal'};font-family:&quot;${esc(String(latin).replace(/["\\]/g,''))}&quot;;letter-spacing:${Number(st.char_spacing_pt||0)}pt;line-height:${Number(st.line_spacing||1.05)};text-align:${st.align||'left'};white-space:nowrap;">${paras}</div>`;}
+   if(e.kind==='text'){const latin=browserFontFamily(e,st.font||p.design.font||'Arial'),east=browserFontFamily(e,st.eastAsianFont||'Noto Sans SC'),baseSize=Math.max(4,Number(st.size||16)),fittedSize=baseSize,paras=String(e.text||'').split('\n').map((line,i)=>`<span class="glyph-line" style="display:block;white-space:pre;margin:${i?Number(st.paragraph_space_before_pt||0)/9.6:0}cqw 0 ${Number(st.paragraph_space_after_pt||0)/9.6}cqw">${textFontRuns(line,latin,east)||'&nbsp;'}<span class="baseline-marker" style="display:inline-block;width:0;height:0;vertical-align:baseline"></span></span>`).join('');return `<div class="stage-el ${e.id===state.selected?'selected':''}" data-el="${esc(e.id)}" style="${pos}display:flex;flex-direction:column;justify-content:${({top:'flex-start',middle:'center',bottom:'flex-end'})[st.vertical_align||'top']};padding:${Number(st.margin_top_pt||0)/9.6}cqw ${Number(st.margin_right_pt||0)/9.6}cqw ${Number(st.margin_bottom_pt||0)/9.6}cqw ${Number(st.margin_left_pt||0)/9.6}cqw;font-size:${fittedSize/9.6}cqw;color:${csshex(st.color||p.design.ink)};font-weight:${st.bold?'700':'400'};font-style:${st.italic?'italic':'normal'};font-family:&quot;${esc(String(latin).replace(/["\\]/g,''))}&quot;;letter-spacing:${Number(st.char_spacing_pt||0)/9.6}cqw;line-height:${Number(st.line_spacing||1.05)};text-align:${st.align||'left'};white-space:pre;">${paras}</div>`;}
    if(e.kind==='formula')return `<div class="stage-el equation ${e.id===state.selected?'selected':''}" data-el="${esc(e.id)}" style="${pos}font-size:${Math.max(8,Number(st.size||22))/9.6}cqw;color:${csshex(st.color||p.design.ink)};" title="LaTeX 源码可编辑"><span class="formula-preview">${esc(e.text)}</span></div>`;
    if(e.kind==='image')return `<img class="stage-el image ${e.id===state.selected?'selected':''}" data-el="${esc(e.id)}" src="${murl(e.asset)}" style="${pos}">`;
    if(e.kind==='rect'||e.kind==='ellipse')return `<div class="stage-el shape ${e.id===state.selected?'selected':''}" data-el="${esc(e.id)}" style="${pos}background:${csshex(st.fill||p.design.accent)};border-radius:${e.kind==='ellipse'?'50%':'0'};"></div>`;
@@ -138,6 +172,7 @@ function renderEditor(){
    return '';
  }).join('');
  state.elements.filter(e=>e.kind==='formula').forEach(e=>renderFormulaPreview(e));
+ requestAnimationFrame(alignGlyphBaselines);
  $('stageMasks').innerHTML=state.masks.map(r=>`<div class="stage-mask" style="left:${r[0]*100}%;top:${r[1]*100}%;width:${r[2]*100}%;height:${r[3]*100}%"></div>`).join('');
  $('stageElements').querySelectorAll('[data-el]').forEach(el=>{
    el.addEventListener('pointerdown',event=>{event.stopPropagation();if(state.mode!=='editable')return;
@@ -146,7 +181,7 @@ function renderEditor(){
      el.setPointerCapture?.(event.pointerId);renderProperties();
      $('stageElements').querySelectorAll('[data-el]').forEach(x=>x.classList.toggle('selected',x.dataset.el===state.selected));
    });
-   el.addEventListener('dblclick',()=>{const e=selected();if(e&&e.kind==='text'){const t=prompt('编辑可编辑文字：',e.text);if(t!==null){e.text=t;renderEditor();}}});
+   el.addEventListener('dblclick',()=>{const e=selected();if(e&&e.kind==='text'){const t=prompt('编辑可编辑文字：',e.text);if(t!==null){e.text=t;run(layoutCurrentElements);}}});
  });
  $('elementSelect').innerHTML=state.elements.map(e=>`<option value="${esc(e.id)}" ${e.id===state.selected?'selected':''}>${esc(e.id)} (${e.kind})</option>`).join('');
  $('elementAsset').innerHTML=Object.keys(s.images).filter(k=>k.startsWith('asset_')).map(k=>`<option value="${s.images[k]}">${esc(s.images[k])}</option>`).join('')||'<option value="">请先上传独立素材</option>';
@@ -156,7 +191,7 @@ function renderProperties(){
  const e=selected();if(!e)return;
  $('elementSelect').value=e.id;$('elementText').value=e.text||'';
  $('elementTextLabel').textContent=e.kind==='formula'?'LaTeX 公式源码':'对象文字';$('formulaHint').classList.toggle('hidden',e.kind!=='formula');
- ['X','Y','W','H'].forEach((n,i)=>$('el'+n).value=Number(e.box[i]).toFixed(3));
+ ['X','Y','W','H'].forEach((n,i)=>$('el'+n).value=Number(e.box[i]).toFixed(9));
  $('elSize').value=e.style?.size||18;$('elColor').value=e.style?.color||e.style?.fill||state.project.design.ink;
  $('elFont').value=e.style?.font||'';$('elBold').checked=!!e.style?.bold;$('elItalic').checked=!!e.style?.italic;$('elCharSpacing').value=e.style?.char_spacing_pt??0;$('elLineSpacing').value=e.style?.line_spacing??1.05;
  $('elMarginLeft').value=e.style?.margin_left_pt??0;$('elMarginRight').value=e.style?.margin_right_pt??0;$('elMarginTop').value=e.style?.margin_top_pt??0;$('elMarginBottom').value=e.style?.margin_bottom_pt??0;$('elParagraphBefore').value=e.style?.paragraph_space_before_pt??0;$('elParagraphAfter').value=e.style?.paragraph_space_after_pt??0;$('elVerticalAlign').value=e.style?.vertical_align||'top';
@@ -185,7 +220,7 @@ function renderStaleExportStatus(){const report=state.lastReport;if(!report||!st
 function assignTab(tab){state.tab=tab;document.querySelectorAll('.tabs [data-tab]').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='tab-'+tab));if(state.project)renderEverything();if(tab==='lab'&&state.project)run(labRefresh)}
 async function saveSlide(){let s=slide();const changes={title:$('slideTitle').value,body:$('slideBody').value,intent:$('slideIntent').value,notes:$('slideNotes').value};
  await put(`/api/projects/${pid()}/slides/${s.id}`,changes);await loadKeep(s.id);toast('已保存 '+s.id+' 内容');}
-async function loadKeep(sid){const p=await api('/api/projects/'+pid());state.project=p;state.sid=sid;state.elsSid=null;renderEverything();await refreshProjects();await refreshReconstructionProgress();}
+async function loadKeep(sid){const id=pid();await loadProject(id,sid);}
 async function getPrompts(){if(!state.project.locked)throw Error('请先锁定规划');return await api(`/api/projects/${pid()}/prompts`)}
 async function lockPlan(){await post(`/api/projects/${pid()}/lock`,{locked:true});await loadKeep(state.sid);toast('已锁定页码，可使用S001…编号生成与上传图片')}
 async function uploadOne(){const f=$('slotFile').files[0];if(!f)throw Error('请先选择图片');
@@ -212,20 +247,35 @@ async function uploadMany(){const files=[...$('batchFiles').files];if(!files.len
  const rows=[];box.textContent=`DeepSeek 正在逐页检查 ${ready.length} 组图片…`;
  for(const id of ready){try{const r=await reviewImagePair(true,id);rows.push(`${id}：${r.score}/100，${r.usable_as_clean?'可作 clean 候选':'需人工检查或重新生成'}${r.residual_text?.length?`，疑似残字 ${r.residual_text.length} 处`:''}`)}catch(e){rows.push(`${id}：审核失败，${e.message}`)}}
  box.textContent='批量图片配对审核结果\n'+rows.join('\n');}
-function applyElement(){const e=selected();if(!e)throw Error('请先选中元素');
+async function applyElement(){const e=selected();if(!e)throw Error('请先选中元素');
+ const previousBox=[...e.box],previousStyle={...(e.style||{})};
  e.text=$('elementText').value;e.box=['X','Y','W','H'].map(n=>Number($('el'+n).value));
  if(e.box.some(v=>!Number.isFinite(v)))throw Error('坐标请输入有效数字');
  e.style=e.style||{};e.style.size=Number($('elSize').value)||18;e.style.color=$('elColor').value.replace('#','');e.style.bold=$('elBold').checked;e.style.italic=$('elItalic').checked;e.style.font=$('elFont').value.trim();e.style.char_spacing_pt=Math.max(-5,Math.min(20,Number($('elCharSpacing').value)||0));e.style.line_spacing=Math.max(.7,Math.min(2.5,Number($('elLineSpacing').value)||1.05));e.style.vertical_align=$('elVerticalAlign').value;
  for(const [key,id] of Object.entries({margin_left_pt:'elMarginLeft',margin_right_pt:'elMarginRight',margin_top_pt:'elMarginTop',margin_bottom_pt:'elMarginBottom',paragraph_space_before_pt:'elParagraphBefore',paragraph_space_after_pt:'elParagraphAfter'}))e.style[key]=Math.max(0,Math.min(72,Number($(id).value)||0));
+ for(const [key,value] of Object.entries(e.style||{}))if(value!==previousStyle[key])e.layout_locks={...(e.layout_locks||{}),[key]:true};
+ if(e.box.some((v,i)=>Math.abs(v-previousBox[i])>1e-8))e.layout_locks={...(e.layout_locks||{}),x:true,y:true,w:true,h:true};
  if(e.kind==='image')e.asset=$('elementAsset').value;
  if(['rect','ellipse'].includes(e.kind))e.style.fill=e.style.color;
- renderEditor();toast('对象属性已修改，记得保存布局');}
+ if(e.kind==='text'||e.kind==='formula')await layoutCurrentElements();else renderEditor();toast('对象属性已修改，记得保存布局');}
 function addElement(kind){const s=slide();const e={id:'e'+Date.now().toString(36),kind,box:[.16,.18,.32,.14],text:kind==='text'?'新文本':kind==='formula'?'\\frac{a}{b}':'',style:{size:kind==='formula'?24:22,color:state.project.design.ink,fill:state.project.design.accent,align:kind==='formula'?'center':'left'}};
  if(kind==='line')e.box=[.2,.35,.38,.008];
  if(kind==='formula')e.box=[.25,.42,.5,.16];
  if(kind==='image'){const role=Object.keys(s.images).find(k=>k.startsWith('asset_'));if(!role)throw Error('请先在「编号上传」添加S001_asset_01.png');e.asset=s.images[role];e.box=s.image_metadata?.[role]?.box||[.53,.28,.30,.40]}
  state.elements.push(e);state.selected=e.id;renderEditor();}
-async function saveElements(){const s=slide();const title=state.elements.find(e=>e.id==='title')?.text??s.title;const body=state.elements.find(e=>e.id==='body')?.text??s.body;await put(`/api/projects/${pid()}/slides/${s.id}`,{elements:state.elements,title,body});await loadKeep(s.id);toast('已保存 '+s.id+' 的PPT原生元素');}
+async function saveElements(){if(state.projectLoading||state.elsSid!==state.sid)throw Error('页面正在加载或元素尚未就绪，已阻止保存');const s=slide();const logicalCopy=field=>{const members=state.elements.filter(e=>e.logical_id===field||e.id===field);if(!members.length)return s[field];const lines=new Map();for(const e of members){const key=e.line_id||field;if(!lines.has(key))lines.set(key,[]);lines.get(key).push(e)}return [...lines.values()].map(line=>line.sort((a,b)=>(a.run_order||0)-(b.run_order||0)).map(e=>e.text||'').join('')).join('\n')};const title=logicalCopy('title'),body=logicalCopy('body');await put(`/api/projects/${pid()}/slides/${s.id}`,{elements:state.elements,title,body});await loadKeep(s.id);toast('已保存 '+s.id+' 的统一PPT布局；导出将使用这些坐标与字号');}
+async function importWPSRender(){
+ const report=state.lastReport;if(!report?.artifact_sha256||report.project_revision!==state.project.revision)throw Error('先导出当前项目 PPTX，再导入该文件的 WPS 结果');
+ const file=$('wpsRenderFile').files?.[0];if(!file)throw Error('选择 WPS 导出的 PDF 或截图');
+ const projectId=pid(),revision=state.project.revision;
+ const data=new FormData();data.append('file',file);data.append('artifact_sha256',report.artifact_sha256);data.append('slide_id',$('wpsRenderSlide').value);data.append('wps_version',$('wpsRenderVersion').value);
+ const crop=$('wpsRenderCrop').value.trim();if(crop)data.append('crop_json',JSON.stringify(crop.split(',').map(Number)));
+ $('wpsRenderReport').textContent='正在导入 WPS 文件并对照原稿…';
+ const result=await api(`/api/projects/${projectId}/wps-render`,{method:'POST',body:data});
+ if(pid()!==projectId||state.project.revision!==revision)throw Error('项目已切换或修改，导入证据已归档但不能验证当前项目');
+ $('wpsRenderReport').textContent=`${result.renderer} · ${result.wps_version} · 项目版本 ${result.project_revision} · 待人工验收（导入不代表视觉/可编辑性通过）\n`+pretty(result);
+ $('wpsComparisons').innerHTML=result.pages.map(page=>{const source=state.project.slides.find(s=>s.id===page.slide_id);return `<article class="qa-page"><h3>${esc(page.slide_id)} · WPS 用户导出</h3><div class="qa-image-pair"><img src="/media/${projectId}/${source.images.design}" alt="原始设计稿"><img src="/wps-preview/${projectId}/${result.import_id}/${page.preview}" alt="WPS 实际导出"></div></article>`}).join('');
+}
 async function runQA(){let q=await api(`/api/projects/${pid()}/qa`);$('qaList').textContent=`硬错误 ${q.counts.errors} · 警告 ${q.counts.warnings}\n`+q.pages.map(s=>`${s.slide_id}: ${s.errors.map(x=>'❌ '+x).concat(s.warnings.map(x=>'⚠ '+x)).join('\n    ')||'✅ 规则检查通过'}`).join('\n');toast(q.ok?'几何/资源检查完成':'发现硬错误，请修复',!q.ok);return q}
 async function exportDeck(mode='editable',supervise=false,round=0){if(round===0&&supervise&&$('autoSupervise')?.checked&&$('autoApplyCalibration')?.checked){state.optimizationRun={best:{},stopped:{},disabled:{},pageStatus:{},noImprove:{},feedback:{},proposalAttempts:{},rejectedCandidates:{},lastCandidates:{},rollbackPending:{},stalledDiffs:{},rounds:0,log:[],memory:null,running:true,cancelRequested:false};$('aiCalibrate').textContent='停止自动优化';$('aiQAResult').textContent='自动优化已启动：保留上一轮可见预览；正在读取项目级经验记忆…';renderOptimizationLog();try{state.optimizationRun.memory=await api(`/api/projects/${pid()}/calibration-memory`)}catch(e){state.optimizationRun.memory={history:[],playbook:[]};logOptimization('经验记忆暂不可用',e.message,'error')}renderOptimizationLog()}else if(supervise&&round>0){$('aiQAResult').textContent=`第${round}轮候选已应用：上一轮成功渲染图仍保留在右侧；正在重新生成并实测…`;renderQAImages()}$('renderReport').textContent='正在调用真实PPTX导出和渲染程序…';let report=await post(`/api/projects/${pid()}/export?mode=${mode}`);state.lastReport=report;
  if(supervise&&state.optimizationRun?.cancelRequested){const run=state.optimizationRun;const restore=(report.visual_comparisons||[]).filter(c=>{const best=run.best?.[c.slide_id],score=c.objective_score?.score;return best&&Number.isFinite(score)&&(score<best.score||(score===best.score&&visualDifferenceProgress(best.differences||[],c.objective_score?.differences||[])<=0.001))});for(const c of restore){const s=state.project.slides.find(x=>x.id===c.slide_id),best=run.best[c.slide_id];if(s&&best?.elements)await put(`/api/projects/${pid()}/slides/${s.id}`,{elements:JSON.parse(JSON.stringify(best.elements)),title:s.title,body:s.body})}if(restore.length){await loadKeep(state.sid);report=await post(`/api/projects/${pid()}/export?mode=${mode}`);state.lastReport=report;renderQAImages()}run.running=false;$('aiCalibrate').textContent='启动整页自动优化';$('aiQAResult').textContent=restore.length?'已停止优化；未提升的候选已自动恢复最佳版，并完成真实渲染。':'已停止优化；当前渲染不低于最佳版，已保留。';logOptimization('用户停止优化',$('aiQAResult').textContent);return report}
@@ -375,155 +425,23 @@ function boxOverlap(a,b){const x=Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-Math.m
 function normalizedText(s){return String(s||'').toLowerCase().replace(/[\s\p{P}\p{S}]/gu,'')}
 function ocrLineGroup(sourceText,sourceBox){const b=(sourceBox||[]).map(v=>Number(v).toFixed(4)).join(',');return `ocr-row:${b}:${normalizedText(sourceText).slice(0,96)}`}
 function regionContainment(a,b){const x=Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-Math.max(a[0],b[0])),y=Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-Math.max(a[1],b[1]));return a[2]*a[3]>0?x*y/(a[2]*a[3]):0}
-function splitMixedScriptLine(text,box,metadata={}){
- const value=String(text||'').trim();if(!value)return[];
- const tokens=value.matchAll(/\\(?:frac|sum|int|sqrt|alpha|beta|gamma|theta|pi|sigma)\b(?:\s*\{[^{}]*\}){0,3}|\\\([^\n]+?\\\)|\\\[[^\n]+?\\\]|\$[^$\n]+\$|(?:[A-Za-z0-9]+(?:\s*[=+\-*/×÷≤≥<>_^]\s*[A-Za-z0-9{}()]+)+)|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+|[\p{Script=Latin}\p{N}]+|\s+|./gu);
- const rows=[...tokens].map(([token])=>({text:token,kind:null}));
- const mathRe=/(?<![\w-])(?:[A-Za-z]{1,2}|\d+(?:\.\d+)?)(?:\s*[_^]\s*(?:[A-Za-z]{1,2}|\d+))?(?:\s*[=+\-*/×÷≤≥<>]\s*(?:[A-Za-z]{1,2}|\d+(?:\.\d+)?)(?:\s*[_^]\s*(?:[A-Za-z]{1,2}|\d+))?)+(?![\w-])/u;
- for(const row of rows){
-  if(/^\d+\s*\/\s*\d+$/u.test(row.text)){row.kind='latin';continue;}
-  if(row.text.startsWith('\\frac')||row.text.startsWith('\\sum')||row.text.startsWith('\\int')||row.text.startsWith('\\sqrt')||row.text.startsWith('\\alpha')||row.text.startsWith('\\beta')||row.text.startsWith('\\gamma')||row.text.startsWith('\\theta')||row.text.startsWith('\\pi')||row.text.startsWith('\\sigma')||row.text.startsWith('\\(')||row.text.startsWith('\\[')||row.text.startsWith('$')){row.kind='formula';continue;}
-  const operators=row.text.match(/[=+\-*/×÷≤≥<>]/g)||[],operands=row.text.split(/[=+\-*/×÷≤≥<>]/).map(x=>x.trim()).filter(Boolean);
-  const variableArithmetic=operators.length===1&&'+-'.includes(operators[0])&&(/\s[+-]\s/u.test(row.text)||operands.every(x=>/^[A-Za-z]{1,2}$/u.test(x)));
-  if((mathRe.test(row.text)&&(operators.some(x=>!'+-'.includes(x))||operators.length>=2||variableArithmetic))||/[A-Za-z]{1,2}\s*[_^]\s*(?:[A-Za-z]{1,2}|\d+)/u.test(row.text)){row.kind='formula';continue;}
-  if(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(row.text))row.kind='cjk';
-  else if(/[\p{Script=Latin}\p{N}]/u.test(row.text))row.kind='latin';
-  else if(/[∑∏√∫=^_×÷≤≥≠±]/u.test(row.text))row.kind='formula';
- }
- const opening=new Set([...`([{（【《「『“‘`]);
- rows.forEach((row,i)=>{if(row.kind)return;const before=[...rows.slice(0,i)].reverse().find(x=>x.kind)?.kind,after=rows.slice(i+1).find(x=>x.kind)?.kind;row.kind=opening.has(row.text)?(after||before):(before||after)||'latin'});
- const chunks=[];for(const row of rows){if(chunks.at(-1)?.kind===row.kind)chunks.at(-1).text+=row.text;else chunks.push({...row})}
- const kept=chunks.map(x=>({...x,text:x.text.trim()})).filter(x=>x.text),sourceText=metadata.source_text||value,sourceBox=metadata.source_box||[...box],sourceGroup=metadata.source_group||ocrLineGroup(sourceText,sourceBox);if(kept.length<=1)return[{...metadata,text:value,box:[...box],text_class:kept[0]?.kind||'latin',source_text:sourceText,source_box:[...sourceBox],source_group:sourceGroup}];
- const weight=ch=>{if(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(ch))return 1;if(/\s/u.test(ch))return .30;if(/[A-Z]/u.test(ch))return .64;if(/[0-9]/u.test(ch))return .56;if(/[a-z]/u.test(ch))return .54;return .40};
- const weights=kept.map(x=>[...x.text].reduce((sum,ch)=>sum+weight(ch),0)),total=weights.reduce((a,b)=>a+b,0)||1;
- let cursor=box[0];return kept.map((chunk,i)=>{const width=i===kept.length-1?box[0]+box[2]-cursor:box[2]*weights[i]/total;const segment={...metadata,text:chunk.text,box:[cursor,box[1],Math.max(width,.000001),box[3]],text_class:chunk.kind,source_text:sourceText,source_box:[...sourceBox],source_group:sourceGroup};cursor+=width;return segment});
-}
-function splitOcrIntoSingleLineRegions(ocrRegions){
- const output=[];
- (ocrRegions||[]).forEach((region,index)=>{
-  const lines=String(region.text||'').replace(/\r\n?/g,'\n').split('\n');
-  const box=Array.isArray(region.box)&&region.box.length===4?region.box.map(Number):[0,0,1,1];
-  lines.forEach((line,lineIndex)=>{
-   const text=line.trim();if(!text)return;
-   const lineBox=lines.length>1?[box[0],box[1]+box[3]*lineIndex/lines.length,box[2],box[3]/lines.length]:box;
-   const sourceText=region.source_text||text,sourceBox=region.source_box||lineBox;
-   output.push(...splitMixedScriptLine(text,lineBox,{...region,id:`ocr_${String(index+1).padStart(3,'0')}_${String(lineIndex+1).padStart(2,'0')}`,text_unit:'line',structure:null,source_text:sourceText,source_box:sourceBox,source_group:region.source_group||ocrLineGroup(sourceText,sourceBox)}));
-  });
- });
- return output;
-}
-function mergeAdjacentRunsFromSameOCRLine(regions){
- const byText=new Map();(regions||[]).forEach((r,i)=>{const key=normalizedText(r.source_text||'');if(!key||!Array.isArray(r.box)||r.box.length!==4)return;if(!byText.has(key))byText.set(key,[]);byText.get(key).push({...r,_mergeIndex:i})});
- for(const [key,items] of byText){if(items.length<2)continue;items.sort((a,b)=>a.box[1]-b.box[1]||a.box[0]-b.box[0]);const clusters=[];
-  for(const item of items){const b=item.box,h=Math.max(.001,Number(b[3])||0),cy=Number(b[1])+h/2;let cluster=clusters.find(c=>Math.abs(c.centerY-cy)<=Math.max(.008,Math.min(c.height,h)*.35)&&Number(b[0])-(c.right)<=Math.max(.018,Math.min(c.height,h)*1.4));
-   if(!cluster){cluster={items:[],left:b[0],right:b[0]+b[2],top:b[1],bottom:b[1]+b[3],centerY:cy,height:h};clusters.push(cluster)}cluster.items.push(item);cluster.left=Math.min(cluster.left,b[0]);cluster.right=Math.max(cluster.right,b[0]+b[2]);cluster.top=Math.min(cluster.top,b[1]);cluster.bottom=Math.max(cluster.bottom,b[1]+b[3]);cluster.height=cluster.bottom-cluster.top;cluster.centerY=(cluster.top+cluster.bottom)/2;
-  }
-  clusters.forEach((c,n)=>{if(c.items.length<2||new Set(c.items.map(item=>item.text_class)).size<2)return;const sourceBox=[c.left,c.top,c.right-c.left,c.bottom-c.top],groupId=`ocr-row:${key}:${Math.round(c.centerY*10000)}:${n}`;for(const item of c.items){const r=regions[item._mergeIndex];r.source_group=groupId;r.source_box=[...sourceBox]}});
- }
- return regions;
-}
 function fontStackForRegion(textClass,latinFont,eastAsianFont){
- const clean=value=>String(value||'').replace(/["\\]/g,'').trim();
- if(textClass==='formula')return '"Cambria Math", "Times New Roman", serif';
- const primary=textClass==='cjk'?(eastAsianFont||latinFont||'Microsoft YaHei'):(latinFont||'Arial');
- const fallback=textClass==='cjk'?['PingFang SC','Noto Sans SC','sans-serif']:['Arial','Noto Sans','sans-serif'];
- return [primary,...fallback].map(name=>name==='sans-serif'?name:`"${clean(name)}"`).join(',');
+ const primary=textClass==='cjk'?(eastAsianFont||latinFont||'Noto Sans SC'):(latinFont||'Noto Sans');
+ return `"${String(primary).replace(/["\\]/g,'')}", sans-serif`;
 }
-function reflowOCRTextBoxes(regions){
- const stage=$('stage'),canvas=document.createElement('canvas'),ctx=canvas.getContext('2d'),widthPx=stage?.clientWidth||1280;
- mergeAdjacentRunsFromSameOCRLine(regions);
- const grouped=new Map();(regions||[]).forEach((r,i)=>{const key=r.source_group||`region-${i}`;if(!grouped.has(key))grouped.set(key,[]);grouped.get(key).push(r)});
- const rowInfo=[...grouped.entries()].map(([key,items])=>{const b=items.find(r=>Array.isArray(r.source_box)&&r.source_box.length===4)?.source_box||items[0]?.box||[0,0,0,0];return {key,items,x:Number(b[0])||0,y:(Number(b[1])||0)+(Number(b[3])||0)/2,w:Number(b[2])||0,h:Number(b[3])||0,textLength:Math.max(...items.map(r=>String(r.source_text||r.text||'').length)),fontSize:Math.max(...items.map(r=>Number(r.style?.size)||0))}});
- for(const [groupKey,group] of grouped){
-  group.sort((a,b)=>a.box[0]-b.box[0]);const mixedRun=group.length>1;let sourceBox=group.find(r=>Array.isArray(r.source_box)&&r.source_box.length===4)?.source_box||[Math.min(...group.map(r=>Number(r.box[0])||0)),Number(group[0]?.box?.[1])||0,group.reduce((sum,r)=>sum+(Number(r.box?.[2])||0),0),Math.max(...group.map(r=>Number(r.box?.[3])||0))];
-  let commonFontSize=mixedRun?Math.min(...group.map(r=>Math.max(6,Number(r.style?.size)||Math.max(9,Math.min(54,Math.round((Number(r.box[3])||0)*720*.70)))))):null;
-  if(mixedRun&&commonFontSize<=18){const own=rowInfo.find(row=>row.key===groupKey),peers=rowInfo.filter(row=>row.key!==groupKey&&Math.abs(row.x-(Number(sourceBox[0])||0))<=.025&&Math.abs(row.y-((Number(sourceBox[1])||0)+(Number(sourceBox[3])||0)/2))<=.16&&row.h/Math.max(.001,Number(sourceBox[3])||0)>=.7&&row.h/Math.max(.001,Number(sourceBox[3])||0)<=1.4&&row.textLength>=12&&row.fontSize<=18);if(peers.length){const peerSizes=peers.map(row=>row.fontSize).filter(size=>size>=8&&size<=18).sort((a,b)=>a-b);if(peerSizes.length)commonFontSize=Math.max(commonFontSize,peerSizes[Math.floor(peerSizes.length/2)]);const nextColumn=Number(sourceBox[0])<.5?Math.min(1,...rowInfo.filter(row=>row.x>(Number(sourceBox[0])||0)+.12&&Math.abs(row.y-((Number(sourceBox[1])||0)+(Number(sourceBox[3])||0)/2))<=.18&&row.textLength>=12).map(row=>row.x)):.96;const right=Math.max((Number(sourceBox[0])||0)+(Number(sourceBox[2])||0),...peers.map(row=>row.x+row.w),Math.min(.96,nextColumn-.035));sourceBox=[sourceBox[0],sourceBox[1],right-sourceBox[0],sourceBox[3]]}}
-  const start=Number(sourceBox[0])||0,measured=group.map((r,index)=>{
-   const style=r.style||{},fontSize=commonFontSize||Math.max(6,Number(style.size)||Math.max(9,Math.min(54,Math.round((Number(r.box[3])||0)*720*.70))));
-   const latin=style.font||state.project?.design?.font||'Arial';
-   const eastAsian=style.eastAsianFont||(CJK_FONT_FAMILIES.has(latin)?latin:'Microsoft YaHei');
-   const fontStack=fontStackForRegion(r.text_class,latin,eastAsian);
-   const cssPx=fontSize*widthPx/960,weight=style.bold?'700':'400';ctx.font=`${weight} ${cssPx}px ${fontStack}`;
-   const tracking=(Number(style.char_spacing_pt)||0)*widthPx/960*Math.max(0,[...String(r.text||'')].length-1);
-   const naturalWidth=Math.max(.0005,(ctx.measureText(String(r.text||'')).width+tracking)/widthPx*1.002+.00012);
-   let fittedSize=fontSize;
-   if(!mixedRun&&Number(r.box[2])>0&&naturalWidth>Number(r.box[2])){
-    fittedSize=Math.max(6,fontSize*Number(r.box[2])/naturalWidth);
-    r.style={...(r.style||{}),size:Math.round(fittedSize*10)/10,auto_fit_width:true};
-   }
-   // Different scripts get separate boxes, but their visible glyph edges must
-   // touch: do not turn the empty safety margin in a box into a visible gap.
-   const advance=mixedRun&&r.text_class==='latin'?naturalWidth*.92:naturalWidth;
-   return {advance,width:mixedRun?naturalWidth*1.10:(Number(r.box[2])||naturalWidth),gapAfter:0,fontSize:fittedSize,style:r.style||style,fontStack};
-  });
-  // Preserve the OCR/source font size. Shrink only when measured text truly
-  // exceeds the source line width; an extra 18% reserve made the preview tiny.
-  const total=measured.reduce((sum,m)=>sum+m.advance+m.gapAfter,0),capacity=Math.max(.001,Number(sourceBox[2])||total),rightLimit=Math.max(.001,1-start),scale=mixedRun?Math.min(1,capacity/Math.max(total,1e-6),rightLimit/Math.max(total,1e-6)):1;
-  if(mixedRun&&scale<.999){for(let i=0;i<group.length;i++){const size=Math.max(4,measured[i].fontSize*scale);measured[i].fontSize=size;measured[i].advance*=scale;measured[i].width*=scale;measured[i].gapAfter*=scale;group[i].style={...(group[i].style||{}),size:Math.round(size*10)/10,auto_fit_width:true}}}
-  const totalFitted=measured.reduce((sum,m)=>sum+m.advance+m.gapAfter,0),cursor=Math.max(0,Math.min(start,1-totalFitted));let x=cursor;
-  group.forEach((r,i)=>{
-   const {width,fontSize,style}=measured[i],lineHeight=Math.max(1.65,Number(style.line_spacing)||1.05),h=Math.max(Number(sourceBox[3])||0,fontSize*lineHeight/540),bottom=(Number(sourceBox[1])||Number(r.box[1])||0)+(Number(sourceBox[3])||Number(r.box[3])||h);
-   r.box=[x,Math.max(0,bottom-h),width,h];r.style={...(r.style||{}),vertical_align:'bottom'};x+=measured[i].advance+measured[i].gapAfter;
-  });
- }
- return regions;
+async function reflowOCRTextBoxes(regions,sid=state.sid){
+ const projectId=pid();
+ const response=await post(`/api/projects/${projectId}/slides/${sid}/text-layout`,{regions});
+ if(state.project?.id!==projectId||state.sid!==sid)throw Error('页面已切换，布局候选未写入其他页面');
+ await ensureProjectFonts({id:projectId,slides:[{elements:response.regions}]});return response.regions;
 }
-function normalizeSmallCaptionRows(regions){
- const byLine=new Map();
- (regions||[]).forEach((r,i)=>{const key=r.source_group||`caption-${i}`,b=r.source_box||r.box;if(!Array.isArray(b)||b.length!==4)return;if(!byLine.has(key))byLine.set(key,[]);byLine.get(key).push(r)});
- const lines=[...byLine.values()].map(rows=>{
-  const boxes=rows.map(r=>r.source_box||r.box),top=Math.min(...boxes.map(b=>Number(b[1])||0)),bottom=Math.max(...boxes.map(b=>(Number(b[1])||0)+(Number(b[3])||0))),height=bottom-top;
-  return {rows,top,bottom,height,size:rows.map(r=>Number(r.style?.size)||0).filter(n=>n>0).sort((a,b)=>a-b)[Math.floor(rows.filter(r=>Number(r.style?.size)>0).length/2)]||0};
- }).filter(line=>line.top>=.82&&line.height<=.065&&line.rows.some(r=>String(r.text||'').trim()));
- const clusters=[];
- for(const line of lines.sort((a,b)=>a.bottom-b.bottom)){
-  let cluster=clusters.find(group=>Math.abs(group.anchor-line.bottom)<=.012);
-  if(!cluster){cluster={anchor:line.bottom,lines:[]};clusters.push(cluster)}cluster.lines.push(line);
- }
- for(const cluster of clusters){
-  if(cluster.lines.length<2)continue;
-  const bottoms=cluster.lines.map(line=>line.bottom).sort((a,b)=>a-b),median=bottoms[Math.floor(bottoms.length/2)];
-  const sizes=cluster.lines.map(line=>line.size).filter(n=>n>0).sort((a,b)=>a-b),commonSize=sizes.length>=2?sizes[Math.floor(sizes.length/2)]:0;
-  for(const line of cluster.lines)for(const r of line.rows){
-   const old=r.source_box||r.box,h=Number(old[3])||line.height;
-   r.source_box=[old[0],Math.max(0,median-h),old[2],h];
-   if(commonSize&&line.size>0&&Math.max(line.size,commonSize)/Math.max(1,Math.min(line.size,commonSize))>1.15)r.style={...(r.style||{}),size:commonSize};
-  }
- }
- return clusters.filter(group=>group.lines.length>1).length;
-}
-function normalizeSiblingTextRows(regions,designFont='Microsoft YaHei'){
- const candidates=(regions||[]).filter(r=>r.role!=='ignore'&&r.role!=='title'&&Array.isArray(r.box)&&r.box.length===4&&String(r.text||'').trim()&&!r.style?.bold&&Number(r.style?.size||0)<=26);
- const lanes=[];
- for(const row of [...candidates].sort((a,b)=>a.box[0]-b.box[0])){
-  let lane=lanes.find(g=>Math.abs(row.box[0]-g.anchor)<=.025);
-  if(!lane){lane={anchor:row.box[0],rows:[]};lanes.push(lane)}
-  lane.rows.push(row);
- }
- const median=values=>{const a=[...values].sort((x,y)=>x-y),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2};
- const mode=(values,fallback)=>{const counts=new Map();for(const v of values.filter(x=>x!==undefined&&x!==null&&x!==''))counts.set(v,(counts.get(v)||0)+1);return [...counts].sort((a,b)=>b[1]-a[1])[0]?.[0]??fallback};
- const qualifies=rows=>{if(rows.length<3)return false;const sizes=rows.map(r=>Number(r.style?.size)||14),xs=rows.map(r=>Number(r.box[0])||0);return Math.max(...sizes)-Math.min(...sizes)<=Math.max(1.5,Math.min(...sizes)*.12)&&Math.max(...xs)-Math.min(...xs)<=.01};
- const normalized=[];
- for(const lane of lanes){
-  const ordered=lane.rows.sort((a,b)=>a.box[1]-b.box[1]),groups=[];let group=[];
-  for(const row of ordered){
-   const prev=group[group.length-1],height=Number(row.box[3])||0;
-   const gap=prev?row.box[1]-(prev.box[1]+prev.box[3]):0;
-   const heightRatio=prev?height/Math.max(.001,Number(prev.box[3])||.001):1;
-   const size=Number(row.style?.size)||14,prevSize=Number(prev?.style?.size)||14;
-   if(prev&&(gap<-.01||gap>Math.max(height,prev.box[3])*.9||heightRatio<.65||heightRatio>1.5||Math.abs(size-prevSize)>Math.max(2.5,prevSize*.28))){if(qualifies(group))groups.push(group);group=[]}
-   group.push(row);
-  }
-  if(qualifies(group))groups.push(group);
-  for(const rows of groups){
-   const left=median(rows.map(r=>Number(r.box[0])||0)),lineHeight=median(rows.map(r=>Number(r.box[3])||0));
-   const size=Math.round(median(rows.map(r=>Number(r.style?.size)||14))*2)/2;
-   const font=mode(rows.map(r=>r.style?.font),designFont),eastAsianFont=mode(rows.map(r=>r.style?.eastAsianFont),undefined),color=mode(rows.map(r=>r.style?.color),'333333'),bold=rows.filter(r=>!!r.style?.bold).length>rows.length/2;
-   for(const row of rows){row.text=String(row.text||'').trim();row.box=[left,row.box[1],row.box[2],lineHeight];row.style={...(row.style||{}),size,font,...(eastAsianFont?{eastAsianFont}:{}),color,bold,align:'left'};row.siblingRowCount=rows.length}
-   normalized.push(rows.length);
-  }
- }
- return normalized;
+async function layoutCurrentElements(){
+ const sid=state.sid,projectId=pid();
+ const response=await post(`/api/projects/${projectId}/slides/${sid}/text-layout`,{elements:state.elements});
+ if(state.project?.id!==projectId||state.sid!==sid)throw Error('页面已切换，布局候选未写入其他页面');
+ state.elements=response.elements;state.elsSid=sid;await ensureProjectFonts({id:projectId,slides:[{elements:response.elements}]});renderEditor();
+ toast(`已生成统一布局候选，${response.layout.warnings.length} 个对象有提示；检查后保存布局`);
+ return response;
 }
 async function autoRebuildSlide(){
  const sid=state.sid,s=slide();if(!s?.images.design)throw Error('先上传本页完整设计稿');if(!cleanPairCurrent(s))throw Error('先为本页上传与当前 design 配对的 clean 无字底图');
@@ -544,8 +462,8 @@ async function autoRebuildSlide(){
  if(ocrResult.status!=='fulfilled')throw ocrResult.reason;
  const ocr=ocrResult.value,vision=visionResult.status==='fulfilled'?visionResult.value:null;
  const structure=vision?.objects?.filter(o=>o.kind==='text')||[];
- const lineRegions=splitOcrIntoSingleLineRegions(ocr.regions||[]);
- const regions=lineRegions.map((r,i)=>{
+ const lineRegions=ocr.regions||[];
+ let regions=lineRegions.map((r,i)=>{
   const txt=normalizedText(r.text),plannedTitle=normalizedText(s.title);
   const best=r.structure?{o:r.structure,overlap:1}:structure.map(o=>({o,overlap:regionContainment(r.box,o.box)})).sort((a,b)=>b.overlap-a.overlap)[0];
   // Every OCR baseline remains its own editable text box. Structure proposals
@@ -571,7 +489,7 @@ async function autoRebuildSlide(){
  });
  const keptExistingText=(s.elements||[]).filter(e=>!String(e.id).startsWith('ocr_')&&!['title','body'].includes(e.id)&&e.kind==='text'&&String(e.text||'').trim());
  for(const r of regions){const duplicate=keptExistingText.some(e=>normalizedText(e.text)===normalizedText(r.text)&&regionContainment(r.box,e.box)>=.45);if(duplicate){r.role='ignore';r.editable=false;r.duplicate_of_existing=true}}
- const normalizedCaptions=normalizeSmallCaptionRows(regions),normalizedRowGroups=normalizeSiblingTextRows(regions,state.project.design?.font||'Microsoft YaHei');reflowOCRTextBoxes(regions);
+
  const cleanup=[];
  if(pair.repairable_clean){
   for(const [i,residual] of pair.residual_text.entries()){
@@ -582,12 +500,9 @@ async function autoRebuildSlide(){
    if(region.confidence>=.88)region.editable=true;
   }
  }
- state.labRegions=regions;labRenderRegions();await put(`/api/projects/${pid()}/slides/${sid}/regions`,{regions});
+ regions=await reflowOCRTextBoxes(regions,sid);state.labRegions=regions;labRenderRegions();await put(`/api/projects/${pid()}/slides/${sid}/regions`,{regions});
  let selected=regions.filter(r=>r.editable&&r.role!=='ignore');
- const existingOther=(s.elements||[]).filter(e=>!String(e.id).startsWith('ocr_')&&!['title','body'].includes(e.id)).length;
- const maxNative=Math.max(0,148-existingOther);
- selected=selected.sort((a,b)=>(['title','body'].includes(b.role)-['title','body'].includes(a.role))||(b.confidence-a.confidence)).slice(0,maxNative);
- if(selected.length<regions.filter(r=>r.editable&&r.role!=='ignore').length){const chosen=new Set(selected);regions.forEach(r=>{if(r.editable&&!chosen.has(r))r.editable=false});state.labRegions=regions;labRenderRegions();await put(`/api/projects/${pid()}/slides/${sid}/regions`,{regions})}
+ for(const r of regions)r.review_reason=r.duplicate_of_existing?'与现有对象重复':r.role==='ignore'?'语义标记为忽略':!r.editable?'置信度不足，待人工确认':null;
  if(!selected.length&&!cleanup.length){state.autoCandidateSid=null;out.textContent=`OCR 已识别 ${regions.length} 个区域，但没有达到自动提升置信度阈值的文字。为避免错字被写入，请在「更多工具 → OCR与背景修复」校正并勾选区域后再继续。${vision?` DeepSeek 识别了 ${structure.length} 个文字对象。`: ' DeepSeek 结构分析暂不可用。'}`;assignTab('lab');return}
  let previewUrl=murl(s.images.clean),repairReport=null;
  if(cleanup.length){
@@ -602,28 +517,24 @@ async function autoRebuildSlide(){
  const previewText=selected.map(r=>{
   const [x,y,w,h]=r.box,st=r.style||{},estimate=Math.round(h*720*(r.role==='title'?.78:.70));
   const size=Math.max(6,Number(st.size)||Math.max(9,Math.min(54,estimate)));
-  const latin=st.font||state.project.design.font,east=st.eastAsianFont||(CJK_FONT_FAMILIES.has(latin)?latin:'Microsoft YaHei'),fontStack=fontStackForRegion(r.text_class,latin,east);
-  return `<div class="auto-preview-text" style="left:${x*100}%;top:${y*100}%;width:${w*100}%;height:${h*100}%;font-size:${size/9.6}cqw;color:${csshex(st.color||state.project.design.ink)};font-family:${esc(fontStack)};font-weight:${st.bold?'700':'400'}">${esc(String(r.text||'').replace(/[\r\n]+/g,' '))}</div>`
+  const latin=browserFontFamily(r,st.font||state.project.design.font),east=browserFontFamily(r,st.eastAsianFont||'Noto Sans SC'),fontStack=fontStackForRegion(r.text_class,latin,east);
+  return `<div class="auto-preview-text" style="left:${x*100}%;top:${y*100}%;width:${w*100}%;height:${h*100}%;font-size:${size/9.6}cqw;color:${csshex(st.color||state.project.design.ink)};font-family:${esc(fontStack)};font-weight:${st.bold?'700':'400'}">${esc(String(r.text||''))}</div>`
  }).join('');
- out.innerHTML=`<p><b>Agent 处理完成 · ${sid}</b></p><p>配对 ${pair.score}/100 · OCR识别 ${ocr.regions?.length||0} 个区域 → 按换行及中英/数字/公式类型拆为 ${regions.length} 个独立文本框 · 对齐并统一样式的同级行组 ${normalizedRowGroups.length} 组 · 小字图注对齐 ${normalizedCaptions} 组 · 自动提升 ${selected.length} 个 · 待人工复核 ${low} 个 · ${esc(warning)}</p>${repairReport?`<p>clean 局部修复候选：${repairReport.method} · 遮罩 ${repairReport.mask_percent}% 。`:'<p>沿用已上传且通过配对检查的 clean；没有从 design 重新生成或擦除整页。</p>'}<div class="auto-preview-stage"><img alt="配对无字底图与待提升文字的叠加预览" src="${previewUrl}">${previewText}</div><p class="hint">每个视觉行单独成框；一行中的中文、英文/数字和公式也分别成框，按阅读顺序相邻摆放。同级列表行会对齐首字并统一样式。字色优先取原稿与配对无字底图的像素差；对比度不足时先用黑/白中更清晰的颜色，DeepSeek 后续可按原稿微调。检查叠加预览后确认；确认仅保存文字对象。</p>`;
+ out.innerHTML=`<p><b>Agent 处理完成 · ${sid}</b></p><p>配对 ${pair.score}/100 · OCR识别 ${ocr.regions?.length||0} 个区域 → 按换行及中英/数字/公式类型拆为 ${regions.length} 个独立文本框 · 统一后端测宽与基线 · 自动提升 ${selected.length} 个 · 待人工复核 ${low} 个 · ${esc(warning)}</p>${repairReport?`<p>clean 局部修复候选：${repairReport.method} · 遮罩 ${repairReport.mask_percent}% 。`:'<p>沿用已上传且通过配对检查的 clean；没有从 design 重新生成或擦除整页。</p>'}<div class="auto-preview-stage"><img alt="配对无字底图与待提升文字的叠加预览" src="${previewUrl}">${previewText}</div>${regions.some(r=>!r.editable)?`<details><summary>待复核文字清单（${regions.filter(r=>!r.editable).length}）</summary>${regions.filter(r=>!r.editable).map(r=>`<p>${esc(r.id)} · ${esc(r.text)} · ${esc(r.review_reason||'待确认')}</p>`).join('')}</details>`:''}<p class="hint">每个视觉行单独成框；一行中的中文、英文/数字和公式也分别成框，按阅读顺序相邻摆放。同级列表行会对齐首字并统一样式。字色优先取原稿与配对无字底图的像素差；对比度不足时先用黑/白中更清晰的颜色，DeepSeek 后续可按原稿微调。检查叠加预览后确认；确认仅保存文字对象。</p>`;
  confirmButton.disabled=false;confirmButton.textContent=cleanup.length?`确认修复并进入第三步 · ${selected.length} 框`:`确认保存并进入第三步 · ${selected.length} 框`;
  if(vision?.objects?.length)state.sceneProposal=vision;
 }
 async function confirmAutoRebuild(automatic=false){
  const sid=state.sid;if(state.autoCandidateSid!==sid)throw Error('本页还没有新的 Agent 候选，请先运行自动处理');
- let regions=labReadRows();regions=regions.flatMap(r=>splitMixedScriptLine(r.text,r.box,r));reflowOCRTextBoxes(regions);state.labRegions=regions;labRenderRegions();
+ let regions=await reflowOCRTextBoxes(labReadRows(),sid);state.labRegions=regions;labRenderRegions();
  const promoted=regions.filter(r=>r.editable&&r.role!=='ignore');if(!promoted.length&&state.autoCandidateKind!=='repair')throw Error('没有勾选可编辑文字框');
  await put(`/api/projects/${pid()}/slides/${sid}/regions`,{regions});
  if(!automatic&&!confirm(`确认采用 ${sid} 的去字候选，并将 ${promoted.length} 个文字区域提升为PPT原生文本框？`))return;
  const clean=state.autoCandidateKind==='repair'?await post(`/api/projects/${pid()}/slides/${sid}/accept-clean`):null;
  const s=slide(),els=JSON.parse(JSON.stringify(s.elements||[])).filter(e=>!String(e.id).startsWith('ocr_')&&!['title','body'].includes(e.id));
- const autoSize=r=>Math.max(9,Math.min(54,Math.round(r.box[3]*720*(r.role==='title'?.78:.70))));
- for(const [i,r] of promoted.entries()){
-  const id=`ocr_${String(i+1).padStart(3,'0')}`;
-  const text=String(r.text||'').trim();if(!text)continue;
-  const detectedStyle=r.style||{},font=r.text_class==='formula'?'Cambria Math':detectedStyle.font||state.project.design.font;
-  const eastAsian=r.text_class==='cjk'?(detectedStyle.eastAsianFont||(CJK_FONT_FAMILIES.has(font)?font:'Microsoft YaHei')):detectedStyle.eastAsianFont;
-  els.push({id,kind:'text',text,box:[...r.box],source_text:r.source_text||text,source_box:[...(r.source_box||r.box)],source_group:r.source_group||ocrLineGroup(r.source_text||text,r.source_box||r.box),text_class:r.text_class||'latin',style:{size:detectedStyle.size||autoSize(r),font,...(eastAsian?{eastAsianFont:eastAsian}:{}),...(Number.isFinite(Number(detectedStyle.char_spacing_pt))?{char_spacing_pt:Number(detectedStyle.char_spacing_pt)}:{}),color:detectedStyle.color||state.project.design.ink,bold:!!detectedStyle.bold,align:'left',vertical_align:'bottom'}});
+ for(const r of promoted){
+  if(!String(r.text||'').trim())continue;
+  els.push({...r,id:`ocr_${String(r.run_id||r.id).replace(/[^a-zA-Z0-9_.:-]/g,'').slice(-70)}`,kind:r.kind||'text',text:String(r.text),box:[...r.box],style:{...(r.style||{})}});
  }
  await put(`/api/projects/${pid()}/slides/${sid}`,{elements:els,title:s.title,body:s.body});
  await loadKeep(sid);await post(`/api/projects/${pid()}/slides/${sid}/confirm-reconstruction`);await refreshReconstructionProgress();state.autoCandidateSid=null;state.autoCandidateKind=null;
@@ -847,7 +758,7 @@ function labRenderRegions(){
     return `<div class="lab-region" data-labrow="${i}"><strong>${i+1}</strong><label title="勾选后才会去字并提升为PPT原生文字" class="lab-select"><input type="checkbox" class="lab-editable" ${r.editable?'checked':''}>提升</label>`+
        `<input aria-label="识别文字" class="lab-txt" value="${esc(r.text||'')}">`+
        `<select class="lab-role"><option value="custom" ${r.role==='custom'||!r.role?'selected':''}>普通文本</option><option value="title" ${r.role==='title'?'selected':''}>规划标题</option><option value="body" ${r.role==='body'?'selected':''}>规划正文</option><option value="ignore" ${r.role==='ignore'?'selected':''}>忽略</option></select>`+
-       b.map((v,j)=>`<input class="lab-coordinate" data-col="${j}" aria-label="${['x','y','w','h'][j]}" type="number" step="0.001" value="${Number(v).toFixed(4)}">`).join('')+
+       b.map((v,j)=>`<input class="lab-coordinate" data-col="${j}" aria-label="${['x','y','w','h'][j]}" type="number" step="0.001" value="${Number(v).toFixed(9)}">`).join('')+
        `<button class="btn small danger lab-delete" title="移除">×</button></div>`;
   }).join(''):'<p class="hint">暂无文字区域。点击 OCR 或「添加文字区」。</p>';
   $('labRegions').querySelectorAll('.lab-delete').forEach((btn)=>btn.onclick=()=>{labReadRows();const idx=Number(btn.parentElement.dataset.labrow);state.labRegions.splice(idx,1);labRenderRegions()});
@@ -865,11 +776,11 @@ function labReadRows(){
  state.labRegions=nodes.map((node,i)=>{
     const text=node.querySelector('.lab-txt').value,box=[...node.querySelectorAll('[data-col]')].map(x=>Number(x.value));
     const sameBox=prior[i]?.box?.length===4&&box.every((value,j)=>Math.abs(value-Number(prior[i].box[j]))<1e-6);
-    return {id:`text_${String(i+1).padStart(3,'0')}`,text,
+    return {...(prior[i]||{}),id:prior[i]?.id||`text_${String(i+1).padStart(3,'0')}`,text,
       role:node.querySelector('.lab-role').value,editable:node.querySelector('.lab-editable').checked,box,
       confidence:prior[i]?.confidence||0,style:prior[i]?.style||{},text_class:prior[i]?.text_class,
       source_text:text===prior[i]?.text?prior[i]?.source_text:text,source_box:sameBox?prior[i]?.source_box:box,
-      source_group:manuallyMovedGroups.has(prior[i]?.source_group)?undefined:prior[i]?.source_group};
+      source_group:prior[i]?.source_group,layout_locks:manuallyMovedGroups.has(prior[i]?.source_group)?{...(prior[i]?.layout_locks||{}),x:true,y:true,w:true,h:true}:prior[i]?.layout_locks};
   });
   for(const r of state.labRegions){
     const b=r.box;if(b.some(x=>!Number.isFinite(x))||b[0]<0||b[1]<0||b[2]<=0||b[3]<=0||b[0]+b[2]>1.000001||b[1]+b[3]>1.000001)
@@ -946,17 +857,12 @@ async function labSave(){
   toast('已保存 '+r.regions.length+' 个区域；不会改动项目文案或正式底图');
 }
 async function labApply(){
-  const regions=labReadRows().flatMap(r=>splitMixedScriptLine(r.text,r.box,r));reflowOCRTextBoxes(regions);state.labRegions=regions;labRenderRegions();
+  const regions=await reflowOCRTextBoxes(labReadRows());state.labRegions=regions;labRenderRegions();
   const rows=regions.filter(r=>r.editable&&r.role!=='ignore');
   await put(labEndpoint()+'/regions',{regions});const s=slide();
   if(!rows.length)throw Error('请先添加/识别文字区域');
   const els=JSON.parse(JSON.stringify(s.elements||[])).filter(e=>!String(e.id).startsWith('ocr_')&&!['title','body'].includes(e.id));
-  for(let i=0;i<rows.length;i++){
-    const r=rows[i];if(r.role==='ignore')continue;
-    const autoSize=Math.max(9,Math.min(54,Math.round(r.box[3]*540*.80)));
-    if(r.text.trim())els.push({id:`ocr_${String(i+1).padStart(3,'0')}`,kind:'text',text:r.text.trim(),box:[...r.box],
-      style:{size:r.style?.size||autoSize,color:r.style?.color||state.project.design.ink,font:r.style?.font||state.project.design.font,bold:!!r.style?.bold,align:'left',vertical_align:'bottom'}});
-  }
+  for(const r of rows){if(String(r.text||'').trim())els.push({...r,id:`ocr_${String(r.run_id||r.id).slice(-70)}`,kind:r.kind||'text',text:String(r.text),box:[...r.box]});}
   state.elements=els;state.elsSid=s.id;state.selected=els.find(x=>x.kind==='text')?.id||null;
   renderEditor();assignTab('editor');toast('已提升勾选文字。请检查重复文本与坐标，并点击「保存布局」');
 }
@@ -1012,7 +918,7 @@ function setupStage(){const stage=$('stage');stage.addEventListener('pointerdown
   }
   if(d.id){const e=state.elements.find(x=>x.id===d.id);if(!e)return;
     const dx=(ev.clientX-d.startX)/d.width,dy=(ev.clientY-d.startY)/d.height;
-    e.box[0]=Math.max(0,Math.min(1-e.box[2],d.box[0]+dx));e.box[1]=Math.max(0,Math.min(1-e.box[3],d.box[1]+dy));
+    e.layout_locks={...(e.layout_locks||{}),x:true,y:true};e.box[0]=Math.max(0,Math.min(1-e.box[2],d.box[0]+dx));e.box[1]=Math.max(0,Math.min(1-e.box[3],d.box[1]+dy));
     const node=$('stageElements').querySelector(`[data-el="${d.id}"]`);if(node){node.style.left=e.box[0]*100+'%';node.style.top=e.box[1]*100+'%';}renderProperties();
   }
  });
@@ -1050,11 +956,11 @@ function bindings(){
  $('batchFiles').onchange=ev=>$('batchHint').textContent=[...ev.target.files].map(x=>x.name).join('，');
  $('elementSelect').onchange=ev=>selectElement(ev.target.value);
  document.querySelectorAll('[data-add]').forEach(x=>x.onclick=()=>run(async()=>addElement(x.dataset.add)));
- $('applyElement').onclick=()=>run(async()=>applyElement());$('saveElements').onclick=()=>run(saveElements);
+ $('applyElement').onclick=()=>run(async()=>applyElement());$('saveElements').onclick=()=>run(saveElements);$('layoutElements').onclick=()=>run(layoutCurrentElements);
  $('removeElement').onclick=()=>{state.elements=state.elements.filter(e=>e.id!==state.selected);state.selected=state.elements[0]?.id||null;renderEditor();toast('已从预览移除，记得保存布局')};
  $('editorModes').querySelectorAll('[data-mode]').forEach(x=>x.onclick=()=>{state.mode=x.dataset.mode;renderEditor()});
  $('makeClean').onclick=()=>run(async()=>{if(!state.masks.length)throw Error('先进入标注去字选区模式，在设计图上框选文字区域');const r=await post(`/api/projects/${pid()}/slides/${state.sid}/inpaint`,{rects:state.masks});state.labRegions=state.masks.map(b=>({box:b,text:'',role:'custom'}));assignTab('lab');$('labMaskImg').src=labUrl(r.mask);$('labCandidateImg').src=labUrl(r.candidate);$('labInspectionImg').src=labUrl(r.inspection);toast(r.warning);});
- $('analyzeVisual').onclick=()=>run(analyzeVisual);$('runQA').onclick=()=>run(runQA);$('exportEditable').onclick=()=>run(()=>exportDeck('editable'));$('aiVisualQA').onclick=()=>run(aiVisualQA);$('aiCalibrate').onclick=()=>{const button=$('aiCalibrate');if(state.optimizationRun?.running){state.optimizationRun.cancelRequested=true;button.textContent='正在停止…';return}run(async()=>{if(!$('autoSupervise').checked||!$('autoApplyCalibration').checked)throw Error('请先开启“导出后自动视觉检查”和“自动应用候选”');try{await exportDeck('editable',true)}catch(e){if(state.optimizationRun){state.optimizationRun.running=false;button.textContent='启动整页自动优化'}throw e}})};
+ $('analyzeVisual').onclick=()=>run(analyzeVisual);$('runQA').onclick=()=>run(runQA);$('importWPSRender').onclick=()=>run(importWPSRender);$('exportEditable').onclick=()=>run(()=>exportDeck('editable'));$('aiVisualQA').onclick=()=>run(aiVisualQA);$('aiCalibrate').onclick=()=>{const button=$('aiCalibrate');if(state.optimizationRun?.running){state.optimizationRun.cancelRequested=true;button.textContent='正在停止…';return}run(async()=>{if(!$('autoSupervise').checked||!$('autoApplyCalibration').checked)throw Error('请先开启“导出后自动视觉检查”和“自动应用候选”');try{await exportDeck('editable',true)}catch(e){if(state.optimizationRun){state.optimizationRun.running=false;button.textContent='启动整页自动优化'}throw e}})};
  $('referenceOpacity').oninput=ev=>{const v=Number(ev.target.value);$('referenceValue').textContent=v+'%';$('refOverlay').style.opacity=state.mode==='editable'?String(v/100):'0'};
  $('testAPI').onclick=()=>run(async()=>{$('debugOutput').textContent=pretty(await post('/api/ai/test',aiReq()))});
  [['debugHealth','health'],['debugPlan','plan'],['debugImages','projects'],['debugQA','qa'],['debugJSON','json']].forEach(([id,name])=>$(id).onclick=()=>run(()=>debugSection(name)));
@@ -1068,5 +974,7 @@ function bindings(){
  setupStage();
 }
 async function init(){bindings();await refreshProjects();if(state.projects.length)await loadProject(state.projects[0].id);else renderEverything()}
+window.visualPPTStudioQA={snapshot:()=>JSON.parse(JSON.stringify({project:state.project,sid:state.sid,elements:state.elements,fontStatus:state.fontStatus,selected:state.selected,projectLoading:!!state.projectLoading,reconstructionPages:state.reconstructionPages,lastReport:state.lastReport})),fontsReady:()=>document.fonts.ready,alignBaselines:alignGlyphBaselines};
+window.addEventListener('resize',()=>requestAnimationFrame(alignGlyphBaselines));
 init().catch(e=>toast('初始化失败：'+e.message,true));
 })();

@@ -124,18 +124,28 @@ def validate_box(box):
     if box[2]<=0 or box[3]<=0: raise ValueError('box 宽高必须大于 0')
 
 def update_slide(p:dict,sid:str,changes:dict):
+    from copy import deepcopy
+    from .text_layout import layout_elements
     s=find_slide(p,sid)
+    previous=deepcopy(s.get('elements',[]))
     for f in ['title','body','intent','notes','layout','background']:
         if f in changes:
             if not isinstance(changes[f],str): raise ValueError(f'{f} 必须是字符串')
             s[f]=changes[f][:12000]
     if 'elements' not in changes:
-        for e in s.get('elements',[]):
-            if e.get('id') in ('title','body') and e.get('kind')=='text':
-                e['text']=s[e['id']]
+        for field in ('title','body'):
+            if field not in changes:continue
+            members=[e for e in s.get('elements',[]) if e.get('kind')=='text' and (e.get('id')==field or e.get('logical_id')==field)]
+            if not members:continue
+            base=deepcopy(members[0]);base.update(id=field,text=s[field],box=list(base.get('block_box') or base['box']))
+            for key in ('text_layout','source_text','source_box','source_group','ocr_box','line_id','run_id','char_start','char_end','run_order','whitespace'):
+                base.pop(key,None)
+            first=s['elements'].index(members[0])
+            s['elements']=[e for e in s['elements'] if e not in members]
+            s['elements'].insert(first,base)
     if 'elements' in changes:
         els=changes['elements']
-        if not isinstance(els,list) or len(els)>150: raise ValueError('elements 不合法')
+        if not isinstance(els,list) or len(els)>1000: raise ValueError('elements 必须是最多1000个对象的列表')
         seen=set()
         for e in els:
             if not isinstance(e,dict) or e.get('kind') not in ('text','formula','rect','ellipse','line','image'): raise ValueError('不支持的元素')
@@ -152,10 +162,20 @@ def update_slide(p:dict,sid:str,changes:dict):
             if not isinstance(e.get('style',{}),dict): raise ValueError('元素style必须是对象')
         # The locked plan remains source of truth unless the UI explicitly
         # submits title/body along with the edited scene. Do not trust OCR alone.
-        for e in els:
-            if e.get('id') in ('title','body') and e.get('kind')=='text':
-                e['text']=s[e['id']]
+        for field in ('title','body'):
+            members=[e for e in els if e.get('kind') in ('text','formula') and (e.get('id')==field or e.get('logical_id')==field)]
+            if len(members)==1:
+                members[0]['text']=s[field]
+            elif members:
+                lines={}
+                for e in members:lines.setdefault(e.get('line_id',field),[]).append(e)
+                content='\n'.join(''.join(e['text'] for e in sorted(line,key=lambda e:e.get('run_order',0))) for line in lines.values())
+                if content!=s[field]:raise ValueError(f'{field} 的单行片段与规划原文不一致，请同步标题/正文后保存')
         s['elements']=els
+    if 'elements' in changes or 'title' in changes or 'body' in changes:
+        s['elements'],s['text_structure']=layout_elements(s['elements'],p['design'],sid,previous)
+        if len(s['elements'])>1000:raise ValueError('单行分框后超过1000个对象，请分批复核')
+        p['text_layout_version']=2
     save_project(p); return s
 
 def write_image(p:dict,sid:str,role:str,data:bytes,original:str)->dict:
