@@ -350,10 +350,35 @@ def _dedupe_ocr_fragments(regions: list[dict]) -> list[dict]:
                                          -float(r.get('confidence') or 0)))
     kept=[]
     for region in ordered:
-        if any(_contained_ocr_fragment(region['box'],parent['box']) for parent in kept):
+        if any(_contained_ocr_fragment(region['box'],parent['box']) and
+               _plain_text(region.get('text','')) in _plain_text(parent.get('text',''))
+               for parent in kept):
             continue
         kept.append(region)
     return kept
+
+
+def mark_ocr_conflicts(regions: list[dict]) -> list[dict]:
+    """Keep contradictory observations for review, without merging repeated labels.
+
+    Apply before script splitting: sibling runs share a source box by design.
+    This is a safety gate, never an automatic spelling decision.
+    """
+    from copy import deepcopy
+    result=deepcopy(regions)
+    for index,left in enumerate(result):
+        a=left['box'];ta=_plain_text(left.get('text',''))
+        for right in result[index+1:]:
+            b=right['box'];tb=_plain_text(right.get('text',''))
+            if not ta or not tb or ta==tb:continue
+            ix=max(0,min(a[0]+a[2],b[0]+b[2])-max(a[0],b[0]))
+            iy=max(0,min(a[1]+a[3],b[1]+b[3])-max(a[1],b[1]))
+            if ix/max(1e-9,min(a[2],b[2]))<.78 or iy/max(1e-9,min(a[3],b[3]))<.68:continue
+            for region,other in ((left,right),(right,left)):
+                region['review_required']=True
+                region.setdefault('ocr_conflicts',[]).append({'text':other['text'],'box':list(other['box']),
+                    'confidence':other.get('confidence'),'reason':'same source region has contradictory OCR text'})
+    return result
 
 
 _FORMULA_OPERAND=r'(?:[A-Za-z]{1,2}|\d+(?:\.\d+)?)(?:\s*[_^]\s*(?:[A-Za-z]{1,2}|\d+))?'
@@ -398,7 +423,7 @@ def detect_text(p:dict,sid:str,backend='auto') -> dict:
     # slide and overlapping tiles, then maps detections back to slide coords.
     detected=_rapidocr_multiscale(im,full_upscale=True) if backend=='rapidocr' else _tesseract(im)
     detected=[r for r in detected if r['text'] and r['box'][2]>.001 and r['box'][3]>.001]
-    detected=_split_mixed_script_regions(detected)
+    detected=_split_mixed_script_regions(mark_ocr_conflicts(detected))
     detected=sorted(detected,key=lambda r:(round(r['box'][1]/0.025),r['box'][0],r.get('run_order',0)))
     for i,r in enumerate(detected,1):
         r['id']=f'text_{i:03d}'
@@ -489,7 +514,7 @@ def persist_regions(p:dict,sid:str,regions:list[dict]) -> dict:
             value=r.get(key)
             if isinstance(value,str) and value and len(value)<=1600:
                 item[key]=value
-        for key in ('char_start','char_end','run_order','whitespace','ocr_box','text_layout','layout_managed','layout_locks','kind','font_size_evidence'):
+        for key in ('char_start','char_end','run_order','whitespace','ocr_box','text_layout','layout_managed','layout_locks','kind','font_size_evidence','review_required','ocr_conflicts'):
             if key in r:item[key]=r[key]
         source_box=r.get('source_box')
         if isinstance(source_box,(list,tuple)) and len(source_box)==4:

@@ -479,7 +479,7 @@ async function autoRebuildSlide(){
   // Strong OCR evidence for compact text takes precedence over that semantic
   // label, and its pixel-derived size/color stay authoritative.
   if(compactText&&confidence>=.78&&role==='ignore')role='custom';
-  const editable=role!=='ignore'&&(confidence>=.86||(compactText&&confidence>=.78));
+  const editable=!r.review_required&&role!=='ignore'&&(confidence>=.86||(compactText&&confidence>=.78));
   const visionStyle=!compactText&&best?.overlap>=.50&&best.o.confidence>=.72?best.o.style||{}:{};
   return {...r,id:`text_${String(i+1).padStart(3,'0')}`,role,confidence,editable,
    // OCR glyph-height measurement is a better first-pass font-size signal than
@@ -497,12 +497,12 @@ async function autoRebuildSlide(){
    let region=best?.overlap>=.12?best.r:null;
    if(!region){region={id:`residual_${String(i+1).padStart(3,'0')}`,text:residual.text||'',box:[...residual.box],role:'custom',confidence:residual.confidence||0,editable:false};regions.push(region)}
    cleanup.push({text:region.source_text||region.text||residual.text||'',box:[...(region.source_box||region.box)],confidence:region.confidence||residual.confidence||0});
-   if(region.confidence>=.88)region.editable=true;
+   if(region.confidence>=.88&&!region.review_required)region.editable=true;
   }
  }
  regions=await reflowOCRTextBoxes(regions,sid);state.labRegions=regions;labRenderRegions();await put(`/api/projects/${pid()}/slides/${sid}/regions`,{regions});
  let selected=regions.filter(r=>r.editable&&r.role!=='ignore');
- for(const r of regions)r.review_reason=r.duplicate_of_existing?'与现有对象重复':r.role==='ignore'?'语义标记为忽略':!r.editable?'置信度不足，待人工确认':null;
+ for(const r of regions)r.review_reason=r.review_required?`同一区域OCR冲突：${(r.ocr_conflicts||[]).map(x=>x.text).join(' / ')}，请核对原稿`:r.duplicate_of_existing?'与现有对象重复':r.role==='ignore'?'语义标记为忽略':!r.editable?'置信度不足，待人工确认':null;
  if(!selected.length&&!cleanup.length){state.autoCandidateSid=null;out.textContent=`OCR 已识别 ${regions.length} 个区域，但没有达到自动提升置信度阈值的文字。为避免错字被写入，请在「更多工具 → OCR与背景修复」校正并勾选区域后再继续。${vision?` DeepSeek 识别了 ${structure.length} 个文字对象。`: ' DeepSeek 结构分析暂不可用。'}`;assignTab('lab');return}
  let previewUrl=murl(s.images.clean),repairReport=null;
  if(cleanup.length){

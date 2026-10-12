@@ -54,3 +54,21 @@ def test_visible_overlap_is_distinct_from_overlapping_transparent_frames(scene):
     result=assess_page(p,s,obs,shot,folder)
     assert result['visual_error_objects']==1
     assert any(a['type']=='visible_glyph_overlap' for o in result['objects'] for a in o['anomalies'])
+
+
+def test_conflicting_ocr_is_preserved_and_marked_for_review():
+    regions=[{'text':'T','box':[.049,.191,.0108,.0278],'confidence':.91},
+             {'text':'1','box':[.0493,.1835,.0096,.0354],'confidence':.95},
+             {'text':'1','box':[.6,.2,.01,.03],'confidence':.98}]
+    kept=rc._dedupe_ocr_fragments(regions)
+    assert len(kept)==3
+    marked=rc.mark_ocr_conflicts(kept)
+    assert sum(bool(r.get('review_required')) for r in marked)==2
+    assert not regions[0].get('review_required')
+    assert next(r for r in marked if r['box'][0]==.6).get('review_required') is None
+
+
+def test_confirmed_ocr_fragment_can_still_be_deduplicated():
+    regions=[{'text':'Token','box':[.1,.2,.06,.03]},
+             {'text':'Token label','box':[.1,.2,.2,.04]}]
+    assert [r['text'] for r in rc._dedupe_ocr_fragments(regions)]==['Token label']
