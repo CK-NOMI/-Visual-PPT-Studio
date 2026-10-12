@@ -1,0 +1,1 @@
+{"name":"visual-ppt-studio-renderer","private":true,"version":"0.3.0","description":"Original native PowerPoint renderer","scripts":{"smoke":"node render.js --health"},"dependencies":{"pptxgenjs":"^3.12.0"}}

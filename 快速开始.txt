@@ -1,0 +1,16 @@
+Visual PPT Studio v0.1（双阶段视觉设计 → 可编辑PPTX）
+
+1. 解压 ZIP，进入 visual_ppt_studio 文件夹。
+2. macOS/Linux：终端执行 bash start_mac_linux.sh
+   Windows：双击 start_windows.bat（前提：安装 Python 和 Node.js）。
+3. 浏览器访问 http://127.0.0.1:8765
+4. 项目创建 → 逐页填写标题正文 → 锁定规划 → 复制S001...生图提示词。
+5. 在ChatGPT网页版生成图片；按图片角色保存：
+   S001_design.png 完整设计稿
+   S001_clean.png 去字底图
+   S001_asset_01.png 可选透明素材
+6. 打开网页上传每页图片 → 编辑原生对象 → 规则QA → 导出PPTX/PDF。
+7. 运行 python samples/seed_demo.py 可创建3页离线示例供立即测试。
+
+重要说明：无需OpenAI图片API。DeepSeek API是可选项，填在本机.env，不要在聊天中分享密钥。
+详细教程与限制：README.md。

@@ -1,0 +1,56 @@
+{
+  "project_id": "c96033d67bcd",
+  "workspace": "/mnt/data/work_v03/final_workspace_v2/c96033d67bcd",
+  "baseline_pdf": null,
+  "native_text": {
+    "ok": true,
+    "slides": [
+      {
+        "slide_id": "S001",
+        "native_text_count": 1,
+        "expected_text_count": 1,
+        "missing": [],
+        "pass": true
+      }
+    ]
+  },
+  "renderer": {
+    "slides": 1,
+    "backend": "python-pptx",
+    "native_elements": 2
+  },
+  "coverage": {
+    "slide_id": "S001",
+    "ocr_text_regions": 1,
+    "confirmed_editable_regions": 1,
+    "native_text_objects": 1,
+    "raster_text_regions_estimate": 0,
+    "editable_fraction_of_ocr_regions": 1.0,
+    "note": "OCR检测可能遗漏或重复；该比例只是已人工确认的OCR区域覆盖率，不是整页全部像素的可编辑比例。"
+  },
+  "inpainting": {
+    "slide_id": "S001",
+    "source_sha256": "395995c188aab23ffab79f652396c6868f28615e3fe87a893ec0966d57e04e1f",
+    "mode": "ink",
+    "method": "telea",
+    "selected_text_regions": 1,
+    "selective_background": true,
+    "padding": 2,
+    "threshold": 36,
+    "mask_percent": 0.216,
+    "regions": 1,
+    "created_at": "2026-10-10T07:29:22+00:00",
+    "warning": "修复只是推测被遮挡的像素；需检查背景纹理、文字残留和重要主体。"
+  },
+  "render_comparison": {
+    "slide_id": "S001",
+    "mae_0_255": 9.079,
+    "source_size": [
+      1672,
+      941
+    ],
+    "note": "全局像素差只用于定位问题，字体渲染/色彩差会影响数值，不能当作审美评分。",
+    "diff": "S001_diff.png"
+  },
+  "notice": "仅右上角一处被提升为原生文字，其余密集信息图仍是位图。"
+}

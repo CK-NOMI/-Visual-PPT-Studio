@@ -1,0 +1,16 @@
+.env
+workspace/
+__pycache__/
+.pytest_cache/
+node_modules/
+*.pyc
+
+# Local environments and operating-system metadata
+.venv/
+venv/
+.DS_Store
+
+# Generated editor and test artifacts
+.coverage
+.mypy_cache/
+.ruff_cache/
