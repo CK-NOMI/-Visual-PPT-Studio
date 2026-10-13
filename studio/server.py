@@ -87,6 +87,8 @@ class AIRequest(BaseModel):
     # body, while the full round history remains archived in project memory.
     optimization_feedback:dict[str,Any]|str=Field(default_factory=dict)
     optimization_round:int=Field(default=1,ge=1,le=10000)
+class RepairAIRequest(AIRequest):
+    slides:list[str]|None=None
 class RefineCleanPromptRequest(AIRequest):
     current_prompt:str=Field(default='',max_length=10000)
     review:dict[str,Any]
@@ -618,6 +620,12 @@ async def calibrate_slide_text(pid:str,sid:str,request:AIRequest):
         design_sha=slide.get('image_metadata',{}).get('design',{}).get('sha256')
         if meta.get('stale_source') or meta.get('source_design_sha256')!=design_sha:
             raise ValueError('clean 底图与当前设计稿未配对或已过期，请重新上传后校准。')
+        from .repair_pipeline import inspect as inspect_structure
+        diagnosis=inspect_structure(p,[sid])
+        blockers=[i for page in diagnosis['pages'] for i in page['issues'] if i['issue_type'] in
+                  ('missing_native_object','duplicate_native_object','background_residual_risk','text_overflow','unexpected_line_break','text_displaced_or_hidden')]
+        if blockers:raise ValueError('检测到结构/几何缺陷，请先在03生成并验证修复候选；已阻止无效DeepSeek参数校准。')
+        if request.optimization_round>3:raise ValueError('视觉样式诊断达到3轮预算，请先复核具体对象，不继续空转。')
         preview=_current_export_preview(pid,p,slide,'editable')
         # Keep the exact structured diagnostics sent by the browser as a local
         # JSON artifact. DeepSeek still receives the JSON content in its prompt;
@@ -635,8 +643,21 @@ async def calibrate_slide_text(pid:str,sid:str,request:AIRequest):
             # Local archival is useful for inspection but must not block a valid
             # calibration request to DeepSeek.
             pass
-        return await calibrate_text_layout(p,slide,rel_media(p,sid,'design'),rel_media(p,sid,'clean'),preview,
-            request.api_key,request.model,request.optimization_feedback,request.optimization_round)
+        result=await calibrate_text_layout(p,slide,rel_media(p,sid,'design'),rel_media(p,sid,'clean'),preview,
+            request.api_key,request.model,request.optimization_feedback,request.optimization_round,True)
+        allowed={'color','bold','italic','font','eastAsianFont','size'};objects={e['id']:e for e in slide['elements']}
+        approved=[];rejected=[]
+        for suggestion in result.get('corrections',[]):
+            e=objects.get(suggestion.get('id'));style=suggestion.get('style',{})
+            if e is None or e.get('kind')!='text' or e.get('layout_locks',{}).get('style'):rejected.append(suggestion);continue
+            safe={k:v for k,v in style.items() if k in allowed and not e.get('layout_locks',{}).get(k)}
+            if 'size' in safe and (not isinstance(safe['size'],(int,float)) or
+                not 6<=safe['size']<=96 or abs(safe['size']-e.get('style',{}).get('size',18))>e.get('style',{}).get('size',18)*.25):safe.pop('size')
+            if safe:approved.append({'id':e['id'],'target_text':e['text'],'style':safe,'reason':suggestion.get('reason','视觉样式建议')})
+            if suggestion.get('box') or set(style)-set(safe):rejected.append(suggestion)
+        result['corrections']=approved;result['restricted_suggestions']=rejected
+        result['scope']='style_only; coordinates/content/object changes require repair engine'
+        return result
     except Exception as e:fail(e)
 
 @app.post('/api/projects/{pid}/slides/{sid}/inpaint')
@@ -792,6 +813,98 @@ def render_deck(pid:str,mode:str='editable'):
         alias=build/f'presentation_{mode}.pptx';temp_alias=build/f'.presentation_{mode}.link'
         temp_alias.unlink(missing_ok=True);temp_alias.symlink_to(report['filename']);os.replace(temp_alias,alias)
         return report
+
+@app.post('/api/projects/{pid}/repair/check')
+def repair_check(pid:str,body:dict=Body(default={})):
+    from .repair_pipeline import inspect
+    try:return inspect(p_or_404(pid),body.get('slides'))
+    except Exception as e:fail(e)
+
+@app.post('/api/projects/{pid}/repair/candidates')
+def repair_candidate(pid:str,body:dict=Body(default={})):
+    from .repair_pipeline import create
+    try:return create(p_or_404(pid),body.get('slides'))
+    except Exception as e:fail(e)
+
+@app.post('/api/projects/{pid}/repair/smart-candidates')
+async def smart_repair_candidate(pid:str,request:RepairAIRequest):
+    """One bounded vision pass per selected slide, then evidence-gated local repair."""
+    from .repair_pipeline import inspect as inspect_structure,create
+    from .ai import propose_missing_text
+    p=p_or_404(pid);selected=request.slides
+    slides=[s for s in p['slides'] if not selected or s['id'] in selected]
+    if len(slides)>12:raise HTTPException(400,'一次智能查漏最多处理12页；请分批执行，避免不必要的API消耗。')
+    ai_issues={};ai_review={};calls=0;deterministic=inspect_structure(p,selected)
+    key=request.api_key or configured_api_key()
+    if key:
+        try:
+            # Reuse the current versioned PPTX render. If absent, create it once.
+            for slide in slides:
+                regions=rc.get_regions(p,slide['id']) if slide.get('images',{}).get('design') else None
+                if not regions or not regions.get('source_valid'):
+                    ai_review[slide['id']]=['Design OCR来源未通过当前图片哈希校验，跳过AI自动补建。'];continue
+                try:preview=_current_export_preview(pid,p,slide,'editable')
+                except Exception:
+                    render_deck(pid,'editable');preview=_current_export_preview(pid,p,slide,'editable')
+                calls+=1
+                try:
+                    proposal=await propose_missing_text(p,slide,rel_media(p,slide['id'],'design'),preview,
+                        regions.get('regions',[]),[e for e in slide.get('elements',[]) if e.get('kind') in ('text','formula')],
+                        request.api_key,request.model)
+                    ai_issues[slide['id']]=proposal.get('missing',[])
+                    ai_review[slide['id']]=proposal.get('review',[])
+                except Exception as e:
+                    ai_review[slide['id']]=['AI查漏未完成：'+str(e)[:240]]
+        except Exception as e:
+            # Deterministic recoveries remain useful if the render/API setup fails.
+            for slide in slides:ai_review.setdefault(slide['id'],['AI查漏未完成：'+str(e)[:240]])
+    else:
+        for slide in slides:ai_review[slide['id']]=['未配置DeepSeek密钥；已运行确定性检查，可自动修复项仍会生成候选。']
+    try:
+        result=create(p,selected,ai_issues, calls,ai_review)
+        result['diagnosis']['deterministic_issue_count']=deterministic['issue_count']
+        result['diagnosis']['ai_proposal_count']=sum(len(v) for v in ai_issues.values())
+        return result
+    except Exception as e:fail(e)
+
+@app.get('/api/projects/{pid}/repair/latest')
+def latest_repair(pid:str):
+    from .repair_pipeline import signature
+    p=p_or_404(pid);root=project_dir(pid)/'build'/'repairs'
+    if not root.exists():return None
+    for file in sorted(root.glob('*/status.json'),key=lambda x:x.stat().st_mtime,reverse=True):
+        data=json.loads(file.read_text())
+        if data.get('candidate_signature') and (data.get('base_signature')==signature(p) or
+            data.get('committed') and data.get('committed_signature')==signature(p)):return data
+    return None
+
+@app.get('/api/projects/{pid}/repair/{token}')
+def repair_status(pid:str,token:str):
+    from .repair_pipeline import get
+    try:return get(pid,token)
+    except Exception as e:fail(e)
+
+@app.post('/api/projects/{pid}/repair/{token}/validate')
+def repair_validate(pid:str,token:str):
+    from .repair_pipeline import validate
+    try:return validate(pid,token)
+    except Exception as e:fail(e)
+
+@app.post('/api/projects/{pid}/repair/{token}/commit')
+def repair_commit(pid:str,token:str):
+    from .repair_pipeline import commit
+    try:return commit(pid,token)
+    except Exception as e:fail(e)
+
+@app.get('/api/projects/{pid}/repair/{token}/files/{filename:path}')
+def repair_file(pid:str,token:str,filename:str):
+    from .repair_pipeline import session_dir
+    try:
+        folder=session_dir(pid,token).resolve();file=(folder/filename).resolve()
+        if not file.is_relative_to(folder) or not file.is_file() or file.suffix not in ('.html','.json','.png','.pptx','.pdf'):
+            raise ValueError('修复文件不可访问')
+        return FileResponse(file,headers={'Cache-Control':'no-cache'})
+    except Exception as e:fail(e)
 
 @app.post('/api/projects/{pid}/export')
 def export(pid:str,mode:str='editable'):

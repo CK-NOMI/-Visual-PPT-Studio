@@ -8,6 +8,21 @@ from PIL import Image
 from .quality import _contrast
 from .core import project_dir
 
+DIAGNOSTICS_REVISION='20261012-line-ink-v2'
+
+
+def paired_ink_bounds(design,clean,box):
+    """Source pixels removed in the paired clean image, independent of OCR height."""
+    import numpy as np
+    from . import reconstruction as rc
+    if clean is None:return None
+    x,y,x2,y2=rc.as_pixels(box,design.width,design.height)
+    a=np.asarray(design.crop((x,y,x2,y2)),dtype=float);b=np.asarray(clean.crop((x,y,x2,y2)),dtype=float)
+    delta=np.linalg.norm(a-b,axis=2);mask=delta>24
+    if mask.sum()<12 or mask.mean()>.7:return None
+    yy,xx=np.where(mask);color=rc._paired_text_color(np.asarray(design),np.asarray(clean),box)
+    return {'box':[(x+xx.min())/design.width,(y+yy.min())/design.height,(xx.max()-xx.min()+1)/design.width,(yy.max()-yy.min()+1)/design.height],
+            'color':color,'pixels':int(mask.sum()),'method':'paired Design/Clean removed ink; OCR padding excluded'}
 
 def assess_page(project, slide, observation, screenshot, folder, visual_comparison=None):
     stage=observation['stage'];scale=stage['width']/960
@@ -27,6 +42,7 @@ def assess_page(project, slide, observation, screenshot, folder, visual_comparis
     if clean is not None and rc.available_ocr().get('rapidocr'):
         clean_ocr=[r for r in rc._rapidocr(np.asarray(clean)) if float(r.get('confidence',0))>=.85]
     render_diffs=(visual_comparison or {}).get('objective_score',{}).get('differences',[])
+    line_sizes=Counter(e.get('line_id',e['id']) for e in expected.values())
     for id_,e in expected.items():
         dom=observed.get(id_);layout=e.get('text_layout') or {};issues=[]
         st=e.get('style') or {};size=float(st.get('size',18));box=e['box']
@@ -54,13 +70,13 @@ def assess_page(project, slide, observation, screenshot, folder, visual_comparis
                 if backend and abs(ink['height']-(backend[3]-backend[1])*scale)>max(.75,ink['height']*.08):
                     issues.append({'type':'browser_backend_glyph_height','severity':'review','expected_px':(backend[3]-backend[1])*scale,'actual_px':ink['height']})
             for warning in layout.get('layout_warning',[]):
-                severity='error' if warning.startswith('layout_conflict:') else 'review'
-                issues.append({'type':warning,'severity':severity})
+                severity='error' if warning.startswith('layout_conflict:') else 'info' if warning=='source_width_exceeded:no_font_shrink' else 'review'
+                issues.append({'type':warning,'severity':severity,'classification':'source_advance_reference; not frame/ink overflow' if warning=='source_width_exceeded:no_font_shrink' else 'layout_constraint'})
         # Use matched image evidence as an additional measurement, not as a
         # replacement for the exact DOM export contract.
         for diff in render_diffs:
             if diff.get('id')==id_ or id_ in diff.get('objects',[]):
-                issues.append({'type':'image_'+diff['type'],'severity':'review','measurement':diff})
+                issues.append({'type':'image_'+diff['type'],'severity':'review','classification':'unverified_OCR_'+diff['type'],'measurement':diff})
         source_box=e.get('ocr_box') or e.get('source_box') or box
         crop_box=_union(source_box,box)
         padding=.015
@@ -95,10 +111,42 @@ def assess_page(project, slide, observation, screenshot, folder, visual_comparis
                 rb=residual['box']
                 if rc._plain_text(residual['text'])==rc._plain_text(e['text']) and intersects(vb,rb)/max(1e-9,min(vb[2]*vb[3],rb[2]*rb[3]))>.5:
                     issues.append({'type':'suspected_clean_text_residual','severity':'visual_error','text':residual['text'],'box':rb,'confidence':residual['confidence']})
+        for anomaly in issues:
+            if anomaly['type']!='image_text_overlap':continue
+            ids=anomaly['measurement'].get('objects',[]);boxes=[observed.get(id_,{}).get('ink_box') for id_ in ids]
+            if len(boxes)==2 and all(boxes):
+                a,b=boxes;disjoint=(a['x']+a['width']<=b['x'] or b['x']+b['width']<=a['x'] or a['y']+a['height']<=b['y'] or b['y']+b['height']<=a['y'])
+                anomaly['ink_evidence']={'objects':ids,'bounds':boxes,'disjoint':disjoint}
+                if disjoint:anomaly.update(severity='info',classification='ocr_box_overlap_false_positive')
+        source_ink=None
+        if line_sizes[e.get('line_id',e['id'])]==1 and e['kind']=='text':
+            source_ink=paired_ink_bounds(target,clean,e.get('original_ocr_box') or e.get('source_box') or e.get('ocr_box') or box)
+            ink=(dom or {}).get('ink_box')
+            if source_ink and ink:
+                src=source_ink['box'];actual=[ink['x']/stage['width'],ink['y']/stage['height'],ink['width']/stage['width'],ink['height']/stage['height']]
+                for anomaly in issues:
+                    if anomaly['type']=='image_glyph_size':
+                        ratio=actual[3]/max(1e-6,src[3]);anomaly['ink_evidence']={'source':src,'actual':actual,'height_ratio':ratio}
+                        anomaly['classification']='verified_ink_size_difference' if abs(np.log(ratio))>.18 else 'ocr_padding_false_positive'
+                        if abs(np.log(ratio))<=.18:anomaly['severity']='info'
+                    if anomaly['type']=='image_position_or_size':
+                        center=((src[0]+src[2]/2-actual[0]-actual[2]/2)**2+(src[1]+src[3]/2-actual[1]-actual[3]/2)**2)**.5
+                        ratios=[actual[i]/max(1e-6,src[i]) for i in (2,3)]
+                        anomaly['ink_evidence']={'source':src,'actual':actual,'center_delta':center,'ratios':ratios}
+                        if center<=.010 and all(abs(np.log(r))<=.18 for r in ratios):
+                            anomaly.update(severity='info',classification='ocr_padding_false_positive')
+                    if anomaly['type']=='image_text_color' and source_ink.get('color') and dom.get('font_color'):
+                        import re
+                        css=[int(v) for v in re.findall(r'\d+',dom['font_color'])[:3]]
+                        ref=[int(source_ink['color'][i:i+2],16) for i in (0,2,4)]
+                        if len(css)==3:
+                            distance=float(np.linalg.norm(np.asarray(css)-ref));anomaly['ink_evidence']={'paired_source_color':source_ink['color'],'css_color':css,'distance':distance}
+                            if distance<=45:anomaly.update(severity='info',classification='ocr_color_sampling_false_positive')
+                    if anomaly['type']=='image_text_weight':anomaly['classification']='stroke_evidence_requires_review; not solved by moving frame'
         row={'slide_id':slide['id'],'id':id_,'line_id':e.get('line_id'),'run_id':e.get('run_id'),
              'source_text':e.get('source_text',e.get('text','')),'final_text':e['text'],
              'font_size_pt':size,'font':layout.get('font'),'position':box,
-             'dom':dom,'anomalies':issues,'crop':crop_name}
+             'source_ink':source_ink,'dom':dom,'anomalies':issues,'crop':crop_name}
         objects.append(row);lines[e.get('line_id',id_)].append(row)
     for index,a in enumerate(objects):
         ab=(a['dom'] or {}).get('ink_box')
@@ -125,13 +173,30 @@ def assess_page(project, slide, observation, screenshot, folder, visual_comparis
                                        'raw_whitespace':lm.get('whitespace',[])+rm.get('whitespace',[])}
             if error>max(1.0,float(re['style'].get('size',18))*scale*.06):
                 right['anomalies'].append({'type':'run_spacing_differs_from_layout','severity':'error',**right['adjacent_run_gap']})
+    from .text_layout import diagnose_lines
+    line_geometry=diagnose_lines(slide['elements'],project.get('design'),observation)
+    line_issues=[]
+    for line in line_geometry:
+        members=[o for o in objects if o['id'] in line['element_ids']]
+        grouped=defaultdict(list)
+        for o in members:
+            for anomaly in o['anomalies']:
+                grouped[anomaly['type']].append({'run_id':o['run_id'],'element_id':o['id'],**anomaly})
+        for kind,evidence in grouped.items():
+            if kind=='image_text_overlap' and not any('visible_overlap' in g['issues'] for g in line_geometry if g['line_id']==line['line_id']):
+                for a in evidence:a['classification']='OCR_box_overlap_unconfirmed_by_DOM_ink'
+
+            line_issues.append({'line_id':line['line_id'],'run_ids':line['run_ids'],'issue_type':kind,
+                'severity':'error' if any(a['severity']=='error' for a in evidence) else 'visual_error' if any(a['severity']=='visual_error' for a in evidence) else 'review' if any(a['severity']=='review' for a in evidence) else 'info',
+                'evidence':evidence,'geometry':line,'crops':[o['crop'] for o in members]})
     seen=Counter(o['id'] for o in observation['objects'])
     extra=[{'id':id_,'type':'unexpected_or_duplicate_dom','count':count} for id_,count in seen.items() if id_ not in expected or count>1]
     errors=sum(any(a['severity']=='error' for a in row['anomalies']) for row in objects)+len(extra)
     reviews=sum(any(a['severity'] in ('review','visual_error') for a in row['anomalies']) for row in objects)
     unmapped=[d for d in render_diffs if not d.get('id') and not any(d.get('objects',[]))]
     comparison_status=(visual_comparison or {}).get('objective_score',{}).get('status')
-    return {'slide_id':slide['id'],'objects':objects,'extra_objects':extra,'failed_objects':errors,
+    return {'slide_id':slide['id'],'diagnostics_revision':DIAGNOSTICS_REVISION,'line_geometry':line_geometry,'line_issues':line_issues,
+            'issue_summary':{'line_review_issues':sum(i['severity'] in ('review','visual_error') for i in line_issues),'line_hard_issues':sum(i['severity']=='error' for i in line_issues),'reference_information':sum(i['severity']=='info' for i in line_issues),'by_type':dict(Counter(i['issue_type'] for i in line_issues))},'objects':objects,'extra_objects':extra,'failed_objects':errors,
             'review_objects':reviews,'layout_contract_pass':errors==0,
             'visual_status':'requires_review' if reviews or errors or unmapped or comparison_status not in ('pass',None) else 'pass',
             'unmapped_image_evidence':unmapped,'clean_ocr_candidates':clean_ocr,
@@ -150,10 +215,14 @@ def write_html(report,folder):
     for page in report['pages']:
         rows.append(f'<h2>{h(page["slide_id"])}：布局失败 {page["failed_objects"]}，视觉待复核 {page["review_objects"]}</h2>'
                     f'<p><a href="{page["slide_id"]}_page.png">完整网页截图</a> · <a href="{page["slide_id"]}_stage.png">实际幻灯片截图</a></p>')
+        rows.append('<details open><summary>行级问题（保留全部 run 证据；源框差异不等于裁切）</summary>')
+        for issue in page.get('line_issues',[]):
+            rows.append('<details><summary>'+h(issue['line_id']+' · '+issue['issue_type']+' · '+issue['severity'])+'</summary><pre>'+h(json.dumps(issue,ensure_ascii=False,indent=2))+'</pre>'+''.join('<a href="'+h(c)+'">局部对照</a> ' for c in issue['crops'])+'</details>')
+        rows.append('</details>')
         rows.append('<img class="slide" src="'+page['slide_id']+'_stage.png"><table><tr><th>对象／行</th><th>文字／参数</th><th>诊断</th><th>原稿 → 浏览器局部对照</th></tr>')
         for obj in page['objects']:
             failures='; '.join(a['type'] for a in obj['anomalies']) or '布局契约通过'
-            cls='fail' if any(a['severity']=='error' for a in obj['anomalies']) else 'review' if obj['anomalies'] else 'pass'
+            cls='fail' if any(a['severity']=='error' for a in obj['anomalies']) else 'review' if any(a['severity'] in ('review','visual_error') for a in obj['anomalies']) else 'pass'
             details=json.dumps({'source_text':obj['source_text'],'position':obj['position'],'dom':obj['dom'],'anomalies':obj['anomalies']},ensure_ascii=False,indent=2)
             rows.append(f'<tr class="{cls}"><td>{h(obj["id"])}<br><small>{h(str(obj["line_id"]))}<br>{h(str(obj["run_id"]))}</small></td>'
                         f'<td><pre>{h(obj["final_text"])}</pre>{obj["font_size_pt"]}pt</td><td>{h(failures)}<details><summary>实际参数</summary><pre>{h(details)}</pre></details></td>'

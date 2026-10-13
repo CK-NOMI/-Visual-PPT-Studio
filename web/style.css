@@ -60,3 +60,23 @@
 .stage .glyph-line{white-space:pre;flex:none}
 .stage .baseline-marker{padding:0;border:0;margin:0}
 .qa-image-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.qa-image-pair img{width:100%}
+
+/* Second-step recovery drawer: reuse the reconstruction controls in context. */
+.manual-drawer{position:fixed;inset:0 0 0 auto;margin:0;height:100dvh;max-height:100dvh;width:min(1100px,94vw);max-width:94vw;border:0;border-left:1px solid #e1e5eb;padding:22px;background:#fafafa;overflow:auto;box-shadow:-12px 0 40px #0002}
+.manual-drawer::backdrop{background:#17243a55}.manual-drawer-header{display:flex;justify-content:space-between;align-items:center;position:sticky;top:-22px;background:#fafafa;z-index:4;padding:14px 0;border-bottom:1px solid #ddd}.manual-drawer-header h2{margin:0;font-size:22px}.manual-drawer-header p{margin:5px 0;color:#777}
+.manual-drawer .page-head{margin:16px 0}.manual-drawer .lab-regions{max-height:480px;overflow:auto}.manual-drawer .lab-region{display:grid;grid-template-columns:30px 65px minmax(180px,1fr) 100px repeat(4,65px) 32px;min-width:760px;gap:6px}.manual-drawer .lab-style-fields{grid-column:3/-1;display:flex;gap:10px;align-items:center;flex-wrap:wrap}.manual-drawer .lab-style-fields label{font-size:12px;display:flex;gap:5px;align-items:center;margin:0}.manual-drawer .lab-style-fields input{width:80px}.manual-drawer .lab-style-fields .lab-font{width:160px}.manual-drawer .lab-warning{grid-column:3/-1;color:#a34129;font-size:12px}.manual-preview-stage{position:relative;container-type:inline-size;aspect-ratio:16/9;background:#e8edf3;overflow:hidden;border:1px solid #dce3ec;border-radius:10px;margin:14px 0}.manual-preview-stage>img{width:100%;height:100%;display:block}.manual-preview-text{position:absolute;white-space:pre;line-height:1;cursor:pointer;outline:1px dashed #287acc55}.manual-preview-text:hover{outline:2px solid #b65032}.manual-preview-text .baseline-marker{display:inline-block;width:0;height:0;padding:0;margin:0}
+
+/* Recognition visibility is independent from native-text selection. */
+.auto-preview-stage,.manual-preview-stage{overflow:visible}
+.auto-preview-text[data-review-region]{pointer-events:auto;cursor:pointer}
+.pending-candidate{outline:none;background:transparent}
+.pending-candidate:hover,.pending-candidate:focus-visible{outline:2px dashed #c2692e!important;background:#fff4e61a}
+.candidate-status{position:absolute;bottom:100%;left:0;display:none;white-space:nowrap;font:11px/1.5 system-ui;color:#8b3d13;background:#fff0dd;border:1px solid #e6b58e;border-radius:4px;padding:1px 4px;pointer-events:none}
+
+.sidebar-divider{flex:none;height:1px;min-height:1px;background:#c8c5bf;margin:12px 5px 8px;box-shadow:0 1px 0 #fff}
+
+.pending-candidate:hover>.candidate-status,.pending-candidate:focus-visible>.candidate-status{display:block}
+
+.repair-page{margin:12px 0;border:1px solid #ddd;border-radius:8px;padding:10px}.repair-issue{border-top:1px solid #eee;padding:10px 0}.repair-issue pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto}
+
+.qa-page,.qa-comparisons{min-width:0}.qa-page-title{flex-wrap:wrap}.qa-page-title strong{min-width:0;overflow-wrap:anywhere}.repair-issue pre{white-space:pre-wrap;overflow-wrap:anywhere}

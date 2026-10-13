@@ -226,7 +226,7 @@ def _measure_run(e, theme):
     return metrics
 
 
-def layout_elements(elements, theme=None, slide_id='S001', previous=None):
+def layout_elements(elements, theme=None, slide_id='S001', previous=None, line_constraints=None):
     theme = theme or {}
     result = structure_elements(elements, slide_id)
     prior = {e['id']: e for e in previous or []}
@@ -263,6 +263,8 @@ def layout_elements(elements, theme=None, slide_id='S001', previous=None):
             old_metrics = old.get('text_layout', {})
             baseline = old_metrics.get('baseline_pt', baseline)+(e['box'][1]-old['box'][1])*HEIGHT_PT
             cursor += (e['box'][0]-old['box'][0])*WIDTH_PT
+        constraint=(line_constraints or {}).get(line_id,{})
+        baseline=constraint.get('baseline_pt',baseline);cursor=constraint.get('cursor_pt',cursor)
         baseline = max(max(m['ascent_pt'] for m in measurements), baseline)
         line_warnings = []
         total = sum(m['advance_pt'] for m in measurements)
@@ -348,3 +350,87 @@ def layout_project(project):
         reports.append(report)
     result['text_layout_version'] = VERSION
     return result, {'version': VERSION, 'pages': reports, 'office_verified': False}
+
+
+def diagnose_lines(elements, theme=None, observation=None):
+    """Geometry in points. OCR extents and safety frames are evidence, not ink."""
+    from collections import defaultdict
+    from copy import deepcopy
+    groups=defaultdict(list)
+    dom={o['id']:o for o in (observation or {}).get('objects',[])}
+    stage=(observation or {}).get('stage',{'width':960,'height':540})
+    scale=stage['width']/WIDTH_PT
+    for e in elements:
+        if e.get('kind') in ('text','formula') and e.get('text','').strip():groups[e.get('line_id',e['id'])].append(e)
+    rows=[]
+    for line_id,runs in groups.items():
+        runs.sort(key=lambda e:e.get('run_order',0));evidence=[];issues=[]
+        for e in runs:
+            m=_measure_run(deepcopy(e),theme or {});st=e.get('style',{});b=e['box'];ml=float(st.get('margin_left_pt',0));mt=float(st.get('margin_top_pt',0))
+            baseline=b[1]*HEIGHT_PT+mt+m['ascent_pt']
+            baseline+=max(0,b[3]*HEIGHT_PT-m['line_height_pt']-mt-float(st.get('margin_bottom_pt',0)))*{'top':0,'middle':.5,'bottom':1}.get(st.get('vertical_align','top'),0)
+            ink=[b[0]*WIDTH_PT+ml+m['ink_box_pt'][0],baseline+m['ink_box_pt'][1],m['ink_box_pt'][2]-m['ink_box_pt'][0],m['ink_box_pt'][3]-m['ink_box_pt'][1]]
+            o=dom.get(e['id']);di=(o or {}).get('ink_box')
+            if di:ink=[di['x']/scale,di['y']/scale,di['width']/scale,di['height']/scale];baseline=o['baseline_px']/scale
+            evidence.append({'id':e['id'],'run_id':e.get('run_id',e['id']),'source_box':e.get('original_ocr_box') or e.get('source_box') or e.get('ocr_box') or b,
+                'frame':b,'dom_frame':(o or {}).get('box'),'ink_pt':ink,'baseline_pt':baseline,'advance_pt':m['advance_pt'],
+                'size_pt':float(st.get('size',18)),'line_height_pt':m['line_height_pt'],'locks':e.get('layout_locks',{}),
+                'legacy_warnings':e.get('text_layout',{}).get('layout_warning',[])})
+            if ink[0]<-.5 or ink[1]<-.5 or ink[0]+ink[2]>WIDTH_PT+.5 or ink[1]+ink[3]>HEIGHT_PT+.5:issues.append('ink_outside_slide')
+            if ink[0]<b[0]*WIDTH_PT-.5 or ink[1]<b[1]*HEIGHT_PT-.5 or ink[0]+ink[2]>(b[0]+b[2])*WIDTH_PT+.5 or ink[1]+ink[3]>(b[1]+b[3])*HEIGHT_PT+.5:issues.append('ink_outside_frame')
+        if max(x['baseline_pt'] for x in evidence)-min(x['baseline_pt'] for x in evidence)>.5:issues.append('baseline_mismatch')
+        if len(runs)>1 and all(e['kind']=='text' for e in runs):
+            sizes=[x['size_pt'] for x in evidence]
+            if max(sizes)-min(sizes)>max(.5,min(sizes)*.04):issues.append('line_font_size_mismatch')
+        for left,right in zip(evidence,evidence[1:]):
+            if abs(right['frame'][0]*WIDTH_PT-left['frame'][0]*WIDTH_PT-left['advance_pt'])>.5:issues.append('text_spacing')
+        source=[min(x['source_box'][0] for x in evidence),min(x['source_box'][1] for x in evidence)]
+        source+=[max(x['source_box'][0]+x['source_box'][2] for x in evidence)-source[0],max(x['source_box'][1]+x['source_box'][3] for x in evidence)-source[1]]
+        ink_width=max(x['ink_pt'][0]+x['ink_pt'][2] for x in evidence)-min(x['ink_pt'][0] for x in evidence)
+        rows.append({'line_id':line_id,'run_ids':[x['run_id'] for x in evidence],'element_ids':[x['id'] for x in evidence],
+            'text':''.join(e['text'] for e in runs),'issues':sorted(set(issues)),'evidence':evidence,'source_box':source,
+            'source_extent':{'source_width_pt':source[2]*WIDTH_PT,'ink_width_pt':ink_width,
+                'advance_pt':sum(x['advance_pt'] for x in evidence),'frame_width_pt':max(x['frame'][2]*WIDTH_PT for x in evidence),
+                'classification':'source_reference_difference; not clipping','legacy_warning_retained':any('source_width_exceeded:no_font_shrink' in x['legacy_warnings'] for x in evidence)}})
+    # Overlap of visible ink, not transparent safety frames. Keep both line IDs.
+    for index,left in enumerate(rows):
+        for right in rows[index+1:]:
+            for a in left['evidence']:
+                for b in right['evidence']:
+                    x,y,w,h=a['ink_pt'];xx,yy,ww,hh=b['ink_pt'];area=max(0,min(x+w,xx+ww)-max(x,xx))*max(0,min(y+h,yy+hh)-max(y,yy))
+                    if area/max(1e-6,min(w*h,ww*hh))>.12:
+                        for row,other in [(left,right),(right,left)]:
+                            if 'visible_overlap' not in row['issues']:row['issues'].append('visible_overlap')
+                            row.setdefault('overlap_lines',[]).append(other['line_id'])
+    return rows
+
+
+def repair_line(elements, theme=None, slide_id='S001', normalize_size=False, source_box=None):
+    """Stage03 explicit line transaction; use the existing engine only."""
+    from copy import deepcopy
+    import statistics
+    runs=deepcopy(elements)
+    unlocked=[e for e in runs if not e.get('layout_locks',{}).get('size') and not e.get('layout_locks',{}).get('style')]
+    locked_sizes={float(e.get('style',{}).get('size',18)) for e in runs if e.get('layout_locks',{}).get('size') or e.get('layout_locks',{}).get('style')}
+    target=next(iter(locked_sizes)) if len(locked_sizes)==1 else statistics.median(float(e.get('style',{}).get('size',18)) for e in runs)
+    for e in runs:
+        e.pop('text_layout',None);e['layout_managed']=True
+        if normalize_size and e in unlocked:e.setdefault('style',{})['size']=target
+        if source_box is not None:e['ocr_box']=list(source_box)
+    # Full style locks also lock geometry-affecting style attributes.
+    for e in runs:
+        if e.get('layout_locks',{}).get('style'):
+            e['layout_locks']={**e['layout_locks'],**{k:True for k in e.get('style',{})}}
+    constraints={};cursor=0
+    for e in runs:
+        locks=e.get('layout_locks',{});m=_measure_run(deepcopy(e),theme or {});line=constraints.setdefault(e.get('line_id',e['id']),{})
+        if locks.get('x') and 'cursor_pt' not in line:line['cursor_pt']=e['box'][0]*WIDTH_PT-cursor
+        if locks.get('y') and 'baseline_pt' not in line:
+            st=e.get('style',{});line['baseline_pt']=e['box'][1]*HEIGHT_PT+float(st.get('margin_top_pt',0))+m['ascent_pt']
+        cursor+=m['advance_pt']
+    proposed,report=layout_elements(runs,theme,slide_id,line_constraints=constraints)
+    for old,new in zip(elements,proposed):
+        new['layout_locks']=deepcopy(old.get('layout_locks',{}))
+        if old.get('layout_locks',{}).get('style'):new['style']=deepcopy(old.get('style',{}))
+        new['text_layout']['input_signature']=input_signature(new)
+    return proposed,report

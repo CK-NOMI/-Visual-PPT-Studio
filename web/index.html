@@ -1,25 +1,32 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Visual PPT Studio · 双阶段可编辑PPT工作台</title><link rel="stylesheet" href="/static/style.css?v=layout-v2-qa-side-by-side-20261012-font-stack-v52"></head>
+<title>Visual PPT Studio · 双阶段可编辑PPT工作台</title><link rel="stylesheet" href="/static/style.css?v=layout-v2-qa-side-by-side-20261012-font-stack-v70-stage3-ui-debug"><link rel="stylesheet" href="/static/styles/design-system.css?v=20261012-e"></head>
 <body>
 <div class="app">
   <aside class="side">
-    <div class="brand"><div class="brand-icon">V</div><div><strong>Visual PPT Studio</strong><small>Design → Editable PPTX</small></div></div>
-    <div class="side-heading">项目列表 <button class="icon-btn" id="refreshProjects" title="刷新">↻</button></div>
+    <div class="brand"><img class="brand-icon" src="/static/assets/icons/brand-mark.svg" alt=""><div><strong>Visual PPT Studio</strong><small>Design → Editable PPTX</small></div></div>
+    <div class="side-heading project-heading"><span>当前项目</span><button class="icon-btn" id="refreshProjects" title="刷新项目列表" aria-label="刷新项目列表">↻</button></div>
     <div id="projectList" class="project-list"></div>
-    <button class="btn primary wide" id="newProject">＋ 新建PPT项目</button>
-    <div class="side-note"><div>本地优先 · 不调用生图API</div><small>ChatGPT 网页版生图 → 编号上传 → 可编辑重建</small></div>
+    <div class="sidebar-divider" role="separator" aria-label="当前项目与工作流程分隔"></div>
+    <nav class="tabs side-navigation" id="tabs" aria-label="工作区导航">
+      <div class="nav-group-label">工作流程</div>
+      <button data-tab="plan" class="active"><img src="/static/assets/icons/plan.svg" alt=""><span>01</span> 逐页规划</button>
+      <button data-tab="upload"><img src="/static/assets/icons/upload.svg" alt=""><span>02</span> 上传与自动重建</button>
+      <button data-tab="qa"><img src="/static/assets/icons/qa.svg" alt=""><span>03</span> 检查与导出</button>
+      <div class="nav-group-label tools-label">专业工具</div>
+      <button data-tab="design"><img src="/static/assets/icons/design.svg" alt="">视觉规范与提示词</button>
+      <button data-tab="editor"><img src="/static/assets/icons/editor.svg" alt="">文字 / 公式 / 图形编辑</button>
+
+      <button data-tab="batch"><img src="/static/assets/icons/batch.svg" alt="">批量生产</button>
+      <button data-tab="debug"><img src="/static/assets/icons/debug.svg" alt="">调试中心</button>
+    </nav>
+    <button class="btn primary wide" id="newProject"><span class="plus-mark" aria-hidden="true">＋</span> 新建 PPT 项目</button>
+    <div class="side-note"><div>本地优先 · 不调用生图 API</div><small>ChatGPT 网页版生图 → 编号上传 → 可编辑重建</small></div>
   </aside>
   <main class="main">
     <header class="header"><div><div class="eyebrow">PRESENTATION PRODUCTION WORKSPACE</div><h1 id="projectTitle">可编辑 AI PPT 生产台</h1><p id="projectSubtitle">创建项目后开始规划</p></div>
       <div class="header-actions"><span class="pill" id="lockBadge">未选择项目</span><button class="btn primary" id="btnExportTop">导出 PPTX</button></div>
     </header>
-    <nav class="tabs" id="tabs">
-      <button data-tab="plan" class="active"><span>01</span> 规划</button>
-      <button data-tab="upload"><span>02</span> 上传与自动重建</button>
-      <button data-tab="qa"><span>03</span> 检查与导出</button>
-      <details class="nav-advanced"><summary>更多工具 ▾</summary><button data-tab="design">视觉规范与提示词</button><button data-tab="editor">文字 / 公式 / 图形编辑</button><button data-tab="lab">OCR与背景修复</button><button data-tab="batch">批量生产</button><button data-tab="debug">调试中心</button></details>
-    </nav>
     <div id="notice" class="notice hidden"></div>
     <section class="page active" id="tab-plan">
       <div class="page-head"><div><h2>逐页内容规划</h2><p>先确定页码、标题、正文和视觉意图，锁定规划后再生成并上传图片。</p></div><div class="actions"><button class="btn" id="aiPlan">DeepSeek 生成建议</button><button class="btn primary" id="lockPlan">锁定规划</button></div></div>
@@ -42,11 +49,11 @@
       <div id="aiStyleProposal" class="proposal hidden"></div>
     </section>
     <section class="page" id="tab-upload">
-      <div class="page-head"><div><h2>上传图片，Agent 自动重建</h2><p>第二步按页面逐张运行并确认保存。所有页面完成后，统一进入第三步导出整套 PPTX；自动校准开启时，DeepSeek 再按整套页面实测差异精细校准（最多25轮）。</p></div><div class="pill">异常才需要介入</div></div>
+      <div class="page-head"><div><h2>上传图片，Agent 自动重建</h2><p>第二步按页面逐张运行并确认保存。所有页面完成后，统一进入第三步导出整套 PPTX；自动校准开启时，DeepSeek 再按整套页面实测差异精细校准（最多3轮）。</p></div><div class="pill">异常才需要介入</div></div>
       <div class="stats" id="uploadStats"></div>
       <div class="panel upload-primary"><div class="upload-controls"><div><label>页面</label><select id="slotSlide"></select></div><div><label>上传内容</label><select id="slotRole"><option value="design">完整设计稿（含文字）</option><option value="clean">无字背景图</option><option value="asset_01">透明素材一（可选）</option><option value="asset_02">透明素材二（可选）</option></select></div></div>
        <div class="drop" id="dropSlot"><div id="slotPickerLabel">选择或拖入一张图片<br><small>PNG / JPG / WEBP · 原文件名不限，自动关联当前页与图片类型</small></div><input id="slotFile" type="file" accept="image/png,image/jpeg,image/webp"></div><div id="slotPreview" class="upload-preview hidden"></div><div class="actions"><button class="btn primary" id="uploadOne" disabled>上传图片</button><span class="hint">先预览确认，再上传。系统按当前页和图片类型自动命名；只有批量上传才要求文件名。</span></div><div id="savedSlotImage" class="saved-upload"></div></div>
-       <div class="panel agent-flow"><div class="page-head"><div><h3>自动化处理</h3><p>OCR 和 DeepSeek 为当前页生成独立文本框候选。确认只保存当前页并继续留在第二步；每页分别保存，不会覆盖其他页。</p></div><button class="btn primary" id="autoRebuildPage">运行当前页 Agent</button></div><p id="agentReadiness" class="agent-readiness"></p><div id="autoRebuildResult" class="output">等待本页 design 与 clean 上传完成。</div><div class="actions end"><button class="btn primary" id="confirmAutoRebuild" disabled>确认保存本页</button></div><div id="reconstructionProgress" class="reconstruction-progress"></div><div class="actions end"><button class="btn primary" id="finishReconstruction" disabled>全部页面完成后进入第三步</button></div></div>
+       <div class="panel agent-flow"><div class="page-head"><div><h3>自动化处理</h3><p>OCR 和 DeepSeek 为当前页生成独立文本框候选。确认只保存当前页并继续留在第二步；每页分别保存，不会覆盖其他页。</p></div><div class="actions"><button class="btn" id="openManualRebuild">手动调整</button><button class="btn primary" id="autoRebuildPage">运行当前页 Agent</button></div></div><p id="agentReadiness" class="agent-readiness"></p><div id="autoRebuildResult" class="output">等待本页 design 与 clean 上传完成。</div><div class="actions end"><button class="btn primary" id="confirmAutoRebuild" disabled>确认保存本页</button></div><div id="reconstructionProgress" class="reconstruction-progress"></div><div class="actions end"><button class="btn primary" id="finishReconstruction" disabled>全部页面完成后进入第三步</button></div></div>
       <details class="advanced-panel"><summary>批量上传与图片质检</summary><div class="two-col"><div class="panel"><h3>批量上传</h3><p class="hint">文件名需包含页码和角色，例如 S001_design.png、S001_clean.png。</p><div class="drop" id="dropBatch">选择或拖放多张已编号图片<input id="batchFiles" type="file" multiple accept="image/png,image/jpeg,image/webp"></div><button class="btn" id="uploadMany">验证并批量上传</button><p class="hint" id="batchHint"></p></div><div class="panel"><h3>当前项目图片</h3><div id="assetTable"></div><div class="actions" style="margin-top:12px"><button class="btn" id="reviewImagePair">重新检查图片配对</button><button class="btn" id="refineCleanPrompt" disabled>优化无字图提示词</button></div><div id="pairReview" class="output">上传 design 与 clean 后自动检查；需要时可在此重新检查。</div><div id="batchPairReview" class="output"></div><div id="refinedPromptResult" class="proposal hidden"></div></div></div></details>
     </section>
     <section class="page" id="tab-editor">
@@ -68,7 +75,7 @@
     </section>
 
     <section class="page" id="tab-lab">
-      <div class="page-head"><div><h2>图像重建实验室 · v0.4</h2><p>DeepSeek 页面理解 / 本地 OCR → 人工确认 → 文字掩码 → 本地背景修复 → PPT 原生对象 → 实际渲染对照。API 识别按需调用，修复与导出保留在本机。</p></div><div class="actions"><span class="pill" id="labSlideBadge">S001</span><button class="btn" id="labRefresh">读取当前页实验</button></div></div>
+      <div class="page-head"><div><h2>当前页文字调整</h2><p>校对文字、字号和位置；默认沿用已上传的无字背景。调整后先预览，再保存当前页。</p></div><div class="actions"><span class="pill" id="labSlideBadge">S001</span><button class="btn" id="labRefresh">读取当前页实验</button></div></div>
       <div class="panel"><h3>复杂信息图专用：选择性原生重建</h3>
         <p class="hint">对于 Transformer 这类文字/箭头/公式极密集的单页信息图，先完整保留设计图作为混合底图，仅把勾选的少数文字逐块去字并提升为原生文本；其余文字仍是位图，不能伪称完全可编辑。</p>
         <div class="actions"><button class="btn" id="labRasterFirst">以原图建立基线（重置本页元素）</button><span class="pill" id="labCoverage">等待OCR检查</span></div>
@@ -78,7 +85,7 @@
         <div id="sceneProposal" class="proposal hidden"></div>
         <div class="lab-preview-grid"><div><label>原始设计图（可拖拽绘制一个素材裁剪框）</label><div id="labCanvas" class="lab-canvas"><img id="labOriginal" alt="请先上传设计稿"><div id="labRects"></div><div id="labCropVisual"></div></div></div><div><label>手工裁剪素材区域</label><div class="coordinate-grid"><div><label>X</label><input id="labCropX" type="number" step="0.001" value="0.55"></div><div><label>Y</label><input id="labCropY" type="number" step="0.001" value="0.2"></div><div><label>W</label><input id="labCropW" type="number" step="0.001" value="0.3"></div><div><label>H</label><input id="labCropH" type="number" step="0.001" value="0.4"></div></div><label class="checkbox"><input type="checkbox" id="labMatte"> 尝试对纯色背景做透明化（复杂背景请不要勾选）</label><button class="btn" id="labExtract">提取为 S00X_asset_XX.png</button><p class="hint">分割只能提取原图中可见的像素，不会恢复被文字遮挡的物体。复杂图像分割可后续接 SAM 2。</p></div></div>
       </div>
-      <div class="panel"><div class="toolbar"><h3>② 选择性提升与人工校对</h3><div class="actions"><button class="btn small" id="labAddRegion">＋ 添加文字区</button><button class="btn small" id="labSaveRegions">保存区域 JSON</button><button class="btn small" id="labSelectNone">全部不提升</button><button class="btn primary" id="labApplyTexts">提升勾选文字为原生对象</button></div></div><p class="hint">识别文字不自动覆盖你的大纲。只有勾选「提升」的文字才会去字并创建可编辑对象；其他文字保留在原始底图中。设置 role=title/body 时使用规划原文。坐标均为 0–1。</p><div class="ocr-filter"><input id="ocrSearch" placeholder="搜索识别文字" aria-label="搜索OCR文本"><span id="ocrCount"></span><button class="btn small" id="ocrPrev">上一页</button><span id="ocrPage"></span><button class="btn small" id="ocrNext">下一页</button></div><div id="labRegions" class="lab-regions"></div></div>
+      <div class="panel"><div class="toolbar"><h3>② 选择性提升与人工校对</h3><div class="actions"><button class="btn small" id="labAddRegion">＋ 添加文字区</button><button class="btn small" id="labSaveRegions">保存区域 JSON</button><button class="btn small" id="labSelectNone">全部不提升</button><button class="btn" id="manualPreview">更新预览</button><button class="btn primary" id="labApplyTexts">确认保存本页</button></div></div><p class="hint">勾选需要保存为可编辑文字的对象；可校对文字、字号、字体和位置。取消勾选可排除错误或重复识别。保存沿用上传的无字背景，不自动修图。X/Y/W/H 为页面比例，字号单位为 pt。</p><div class="ocr-filter"><input id="ocrSearch" placeholder="搜索识别文字" aria-label="搜索OCR文本"><span id="ocrCount"></span><button class="btn small" id="ocrPrev">上一页</button><span id="ocrPage"></span><button class="btn small" id="ocrNext">下一页</button></div><div id="labRegions" class="lab-regions"></div></div>
       <div class="panel"><h3>③ 精细文字 Mask 与背景修复（先生成候选，不覆盖正式底图）</h3>
         <div class="lab-controls"><div><label>Mask 范围</label><select id="labMaskMode"><option value="ink">字符像素优先（适合平坦背景）</option><option value="rectangle">整块矩形（粗字体/复杂背景）</option></select></div><div><label>背景修复器</label><select id="labRepairMethod"><option value="telea">OpenCV Telea · 轻量</option><option value="ns">OpenCV Navier-Stokes</option><option value="lama">LaMa · 可选扩展</option></select></div><div><label>膨胀半径（像素）</label><input id="labPad" type="number" value="4" min="0" max="24"></div><div><label>前景差异阈值</label><input id="labThreshold" type="number" value="32" min="5" max="100"></div></div>
         <div class="actions"><button class="btn primary" id="labGenerate">仅对已勾选文字生成 Mask / 候选图</button><button class="btn" id="labAccept">确认候选 → S00X_clean.png</button><button class="btn" id="labCompare">分析真实 PPTX 渲染差异</button></div>
@@ -88,9 +95,10 @@
       </div>
     </section>
     <section class="page" id="tab-qa">
-      <div class="page-head"><div><h2>真实渲染与质量闸门</h2><p>导出按钮只负责生成并渲染 PPTX；自动校准请单独点击下方「启动自动优化」。</p></div><div class="actions"><button class="btn" id="runQA">规则审计</button><button class="btn primary" id="exportEditable">导出并渲染 PPTX</button></div></div>
-      <div class="two-col"><div class="panel"><h3>几何和文件完整性</h3><div id="qaList" class="output"><p class="hint">点击「规则审计」开始。</p></div></div><div class="panel"><h3>PPTX 输出报告（LibreOffice 辅助预览）</h3><div id="renderReport" class="output"><p class="hint">点击「导出并渲染 PPTX」开始。</p></div><div class="automation-settings"><span>自动优化时：导出后视觉检查</span><label class="switch-row"><input id="autoSupervise" type="checkbox" checked> 开启</label><span>DeepSeek 自动校准并应用候选</span><label class="switch-row"><input id="autoApplyCalibration" type="checkbox" checked> 开启</label></div><p class="hint">普通导出不会启动 AI。点击「启动整页自动优化」后，每页分别对照原稿和真实PPT渲染；DeepSeek每轮整体检查本页全部实测差异、重叠风险和同级样式，可联合修改多个关联文字对象。每次请求都带上上一轮逐对象修改参数及其渲染前后差异，要求模型据此保留、调整或撤回；真实PPTX渲染按整页结果验收，未提升时回滚最佳版并换用整体策略，最多25轮。达到90分后，只要仍有可校准差异就继续；没有可校准差异时才停止。每轮最多并行校准3页；逐页预览区可单独暂停/恢复。DeepSeek自评不作为验收分。</p><div class="actions"><button class="btn" id="aiVisualQA">检查本页</button><button class="btn primary" id="aiCalibrate">启动整页自动优化</button></div><div id="calibrationDeckResults" class="output"><p class="hint">启动整页自动优化后，各页结果显示在这里。</p></div><div id="calibrationProposal" class="proposal hidden"></div></div></div>
-      <div class="panel"><h3>逐页目标设计图 vs LibreOffice 辅助预览</h3><div id="qaComparisons" class="qa-comparisons"><p class="hint">导出并渲染 PPTX 后，这里会按页展示完整预览；本阶段主要验收网页真实渲染；PPTX 兼容性另外记录。</p></div><div id="aiQAResult" class="output"></div></div>
+      <div class="page-head"><div><h2>智能检查与修复</h2><p>导出按钮只负责生成并渲染 PPTX；自动校准请单独点击下方「启动自动优化」。</p></div><div class="actions"><button class="btn" id="runQA">规则审计</button><button class="btn primary" id="exportEditable">导出并渲染 PPTX</button></div></div>
+      <div class="panel" id="repairPanel"><div class="page-head"><div><h3>智能检查与定向修复</h3><p>一键完成内容查漏、确定性排版修复、浏览器与 PPTX 验收。只有验证通过的候选才会自动保存；失败或证据不足时保留原项目并说明原因。</p></div><label class="checkbox"><input id="repairWholeDeck" type="checkbox" checked>检查整套</label></div><div class="actions wrap"><button class="btn primary" id="repairAutoRun">自动检查、修复、验收并保存</button></div><div id="repairOverview" class="output">尚未运行。系统会按证据补建或修复可确定的问题，并对不确定项保留复核提示。</div><div id="repairIssues"></div><div id="repairCandidate" class="output hidden"></div></div>
+      <div class="two-col"><div class="panel"><h3>几何和文件完整性</h3><div id="qaList" class="output"><p class="hint">点击「规则审计」开始。</p></div></div><div class="panel"><h3>PPTX 输出报告（LibreOffice 辅助预览）</h3><div id="renderReport" class="output"><p class="hint">点击「导出并渲染 PPTX」开始。</p></div><div class="automation-settings"><span>自动优化时：导出后视觉检查</span><label class="switch-row"><input id="autoSupervise" type="checkbox" checked> 开启</label><span>DeepSeek 自动校准并应用候选</span><label class="switch-row"><input id="autoApplyCalibration" type="checkbox" checked> 开启</label></div><p class="hint">普通导出不会调用 AI。结构或几何缺陷未处理时，系统会停止样式校准并列出问题。AI 只建议字体、字号、颜色、粗细和斜体，不修改文字或坐标；每页最多3次请求，无有效候选或连续无改善即停止。保留历史反馈、候选与回滚记录。LibreOffice 结果是辅助证据；主要验收请使用上方浏览器候选报告。</p><div class="actions"><button class="btn" id="aiVisualQA">检查本页</button><button class="btn primary" id="aiCalibrate">启动样式诊断</button></div><div id="calibrationDeckResults" class="output"><p class="hint">启动样式诊断后，各页结果显示在这里。</p></div><div id="calibrationProposal" class="proposal hidden"></div></div></div>
+      <div class="panel"><h3>逐页目标设计图 vs 浏览器预览</h3><div id="qaComparisons" class="qa-comparisons"><p class="hint">导出并渲染 PPTX 后，这里会按页展示完整预览；本阶段主要验收网页真实渲染；PPTX 兼容性另外记录。</p></div><div id="aiQAResult" class="output"></div></div>
       <div class="panel"><h3>兼容性截图导入（可选）</h3><p class="hint">用 Mac WPS 打开本次 PPTX，检查各类文字能单独编辑，然后选择「文件 → 输出为PDF格式」，每页一张幻灯片，不带备注或讲义。导入 PDF 对照原稿；截图应只包含完整幻灯片。导入仅记录证据，不自动标记验收通过。</p><label>WPS 导出的 PDF 或幻灯片截图</label><input type="file" id="wpsRenderFile" accept=".pdf,.png,.jpg,.jpeg,.webp"><label>截图对应页码（PDF 导入整套）</label><select id="wpsRenderSlide"></select><label>WPS 版本（可选）</label><input id="wpsRenderVersion" placeholder="例如 12.1.28496"><label>界面截图裁剪框（可选，像素 x,y,w,h）</label><input id="wpsRenderCrop" placeholder="只截取幻灯片区域"><button class="btn primary" id="importWPSRender">导入 WPS 结果并对比当前 PPTX</button><div id="wpsRenderReport" class="output"></div><div id="wpsComparisons" class="qa-comparisons"></div></div>
     </section>
     <section class="page" id="tab-batch">
@@ -107,6 +115,7 @@
     </section>
   </main>
 </div>
-<dialog id="newDialog"><form method="dialog" id="newForm"><h2>创建新的演示文稿</h2><label>项目名称</label><input id="newTitle" required placeholder="例如：Transformer技术报告"><label>主题 / 一句话简介</label><textarea id="newTopic" rows="3" required placeholder="这套PPT大致讲什么？可先粗略填写"></textarea><label>预建页数</label><input id="newPages" type="number" min="1" max="60" value="8"><p class="hint">这里只创建空白页面框架。项目名称和主题简介不会自动填入第一页或拆成后续页内容；具体页面之后再逐页规划。</p><label>设计风格</label><select id="newStyle"><option value="editorial">现代编辑</option><option value="dark">未来科技</option><option value="warm">温暖商业</option><option value="mono">克制极简</option></select><label>受众</label><input id="newAudience" value="通用受众"><div class="actions end"><button class="btn" value="cancel">取消</button><button class="btn primary" id="submitNew" value="default">创建项目</button></div></form></dialog>
-<script src="/static/app.js?v=layout-v2-20261012-multipage-reconstruction-gate-v57"></script>
+<dialog id="manualDrawer" class="manual-drawer" aria-labelledby="manualDrawerTitle"><header class="manual-drawer-header"><div><h2 id="manualDrawerTitle">第二步 · 手动调整</h2><p id="manualDrawerContext"></p></div><button class="btn" id="closeManualDrawer" aria-label="关闭手动调整">关闭</button></header><div id="manualDrawerMessage" class="output"></div><div id="manualPreviewStage" class="manual-preview-stage"></div><div id="manualDrawerBody"></div></dialog>
+<dialog id="newDialog"><form id="newForm"><h2>创建新的演示文稿</h2><label>项目名称</label><input id="newTitle" required placeholder="例如：Transformer技术报告"><label>主题 / 一句话简介</label><textarea id="newTopic" rows="3" required placeholder="这套PPT大致讲什么？可先粗略填写"></textarea><label>预建页数</label><input id="newPages" type="number" min="1" max="60" value="8"><p class="hint">这里只创建空白页面框架。项目名称和主题简介不会自动填入第一页或拆成后续页内容；具体页面之后再逐页规划。</p><label>设计风格</label><select id="newStyle"><option value="editorial">现代编辑</option><option value="dark">未来科技</option><option value="warm">温暖商业</option><option value="mono">克制极简</option></select><label>受众</label><input id="newAudience" value="通用受众"><div class="actions end"><button class="btn" id="cancelNew" type="button">取消</button><button class="btn primary" id="submitNew" type="submit">创建项目</button></div></form></dialog>
+<script src="/static/components/icon.js?v=20261012-d"></script><script src="/static/components/app-shell.js?v=20261012-d"></script><script src="/static/services/api.js?v=20261012-d"></script><script src="/static/app.js?v=layout-v2-20261013-v73-stage03-auto-resume"></script>
 </body></html>

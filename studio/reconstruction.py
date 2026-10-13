@@ -505,7 +505,20 @@ def persist_regions(p:dict,sid:str,regions:list[dict]) -> dict:
         if not isinstance(r,dict):raise ValueError('区域格式错误')
         txt=r.get('text','')
         if not isinstance(txt,str) or len(txt)>1600:raise ValueError('文字必须为最多1600字符的字符串')
-        item={'id':str(r.get('id') or f'text_{i+1:03d}'),'text':txt,'box':valid_box(r.get('box')),
+        region_id=str(r.get('id') or f'text_{i+1:03d}')
+        layout=r.get('text_layout') or {}
+        try:
+            if layout.get('version')==2:
+                # A final font frame can exceed the page: preserve its geometry
+                # and conflict for review. This is not an image crop rectangle.
+                from .core import validate_box
+                box=r.get('box');validate_box(box)
+                if not all(np.isfinite(box)):raise ValueError('坐标必须是有限数字')
+                box=list(map(float,box))
+            else:box=valid_box(r.get('box'))
+        except (ValueError,TypeError) as error:
+            raise ValueError(f'文字区域 {region_id}（{txt[:50]}）坐标无效：{error}') from None
+        item={'id':region_id,'text':txt,'box':box,
               'confidence':float(r.get('confidence') or 0),'role':r.get('role','custom'),
               'editable':bool(r.get('editable', False))}
         # Keep script-split provenance across the review/save/reload boundary.
@@ -538,6 +551,11 @@ def persist_regions(p:dict,sid:str,regions:list[dict]) -> dict:
             if isinstance(value,(int,float)) and not isinstance(value,bool) and abs(value)<=100:
                 safe_style[key]=float(value)
         if safe_style:item['style']=safe_style
+        if layout.get('version')==2 and (box[0]<0 or box[1]<0 or box[0]+box[2]>1.000001 or
+                box[1]+box[3]>1.000001 or any(str(w).startswith('layout_conflict:') for w in layout.get('layout_warning',[]))):
+            item['editable']=False
+            item['review_required']=True
+            item['review_reason']='统一布局存在溢出或裁切冲突，请检查字体、字号和位置后人工确认'
         if item['role'] not in ('custom','title','body','ignore'):raise ValueError('role应是custom/title/body/ignore')
         normalized.append(item)
     out={'slide_id':sid,'backend':'human_reviewed','source_sha256':sha_file(source),

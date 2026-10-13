@@ -74,7 +74,14 @@ def test_cached_preview_refused_after_project_edit(env):
 def test_ocr_candidate_not_auto_selected(env,monkeypatch):
     p,data=env
     monkeypatch.setattr(rc,'available_ocr',lambda:{'rapidocr':True,'tesseract':False,'simple_lama':False,'opencv':True})
-    monkeypatch.setattr(rc,'_rapidocr',lambda arr:[{'text':'欢迎','box':[.1,.1,.2,.1],'confidence':.96}])
+    # This tests selection state, not crop mapping. Only the first full image
+    # returns a detection; returning the same normalized box on every quadrant
+    # fabricates five physically different source regions.
+    calls=[]
+    def fake_ocr(arr):
+        calls.append(arr.shape)
+        return [{'text':'欢迎','box':[.1,.1,.2,.1],'confidence':.96}] if len(calls)==1 else []
+    monkeypatch.setattr(rc,'_rapidocr',fake_ocr)
     r=rc.detect_text(p,'S001','rapidocr')
     assert len(r['regions'])==1 and r['regions'][0]['editable'] is False
     assert rc.reconstruction_coverage(p,'S001')['confirmed_editable_regions']==0

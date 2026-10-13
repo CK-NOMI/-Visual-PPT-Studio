@@ -39,7 +39,7 @@ DOM_OBSERVATION=r'''() => {
   const tracking=parseFloat(style.letterSpacing)||0;
   const ink={x:x-m.actualBoundingBoxLeft,y:baseline-m.actualBoundingBoxAscent,width:m.actualBoundingBoxLeft+m.actualBoundingBoxRight+Math.max(0,e.text.length-1)*tracking,height:m.actualBoundingBoxAscent+m.actualBoundingBoxDescent};
   const font=e.text_layout?.font,status=font?snapshot.fontStatus[`${font.file_identity}:${font.requested_weight}`]:null;
-  return {id:e.id,text:e.kind==='text'?text:e.text,kind:e.kind,box:[(n.x-s.x)/s.width,(n.y-s.y)/s.height,n.width/s.width,n.height/s.height],range_rects:ranges,ink_box:e.kind==='text'?ink:null,baseline_px:baseline,font_size_px:parseFloat(style.fontSize),font_family:style.fontFamily,font_weight:style.fontWeight,font_status:status?.status||'legacy_unregistered',font_fallback:status?.fallback||false,canvas_advance_px:m.width,letter_spacing_px:tracking,margins_px:[style.paddingLeft,style.paddingTop,style.paddingRight,style.paddingBottom],white_space:style.whiteSpace,overflow:style.overflow};
+  return {id:e.id,text:e.kind==='text'?text:e.text,kind:e.kind,box:[(n.x-s.x)/s.width,(n.y-s.y)/s.height,n.width/s.width,n.height/s.height],range_rects:ranges,ink_box:e.kind==='text'?ink:null,baseline_px:baseline,font_size_px:parseFloat(style.fontSize),font_family:style.fontFamily,font_weight:style.fontWeight,font_color:style.color,font_status:status?.status||'legacy_unregistered',font_fallback:status?.fallback||false,canvas_advance_px:m.width,letter_spacing_px:tracking,margins_px:[style.paddingLeft,style.paddingTop,style.paddingRight,style.paddingBottom],white_space:style.whiteSpace,overflow:style.overflow};
  });
  return {stage:{width:s.width,height:s.height},objects,browser:navigator.userAgent,font_set_status:document.fonts.status};
 }'''
@@ -123,6 +123,34 @@ def workflow_fixture(page,url,data_root,source_project):
     return {'pass':confirmed and export.get('native_text',{}).get('ok') is True and export.get('saved_layout_check',{}).get('ok') is True,
             'project_id':pid,'confirmed_after_refresh':confirmed,'export':export.get('filename'),
             'provider_mode':'explicit mocked semantic/AI and OCR responses; validates workflow, not OCR/model accuracy'}
+
+
+
+def workflow_manual_drawer(page,url,pid,folder):
+    """Exercise the production recovery UI; leaves the source project untouched."""
+    before=page.request.get(url+f'/api/projects/{pid}').json()
+    page.locator('[data-tab="upload"]').click()
+    sid=page.evaluate('()=>window.visualPPTStudioQA.snapshot().sid')
+    page.locator('#openManualRebuild').click()
+    page.wait_for_function('()=>document.querySelector("#manualDrawer").open&&document.querySelectorAll("[data-labrow]").length>0')
+    field=page.locator('[data-labrow="0"] .lab-size')
+    size=max(6,float(field.input_value())-1);field.fill(str(size))
+    page.locator('#manualPreview').click()
+    page.wait_for_function('()=>document.querySelector("#manualDrawerMessage").textContent.includes("预览已更新")')
+    page.locator('#manualDrawer').screenshot(path=folder/'manual_drawer.png')
+    with page.expect_response(lambda r:r.request.method=='PUT' and r.url.endswith('/'+sid)) as event:
+        page.locator('#labApplyTexts').click()
+    if event.value.status!=200:raise RuntimeError('Manual drawer save failed: '+event.value.text())
+    page.wait_for_function('()=>!document.querySelector("#manualDrawer").open&&!window.visualPPTStudioQA.snapshot().projectLoading')
+    after=page.request.get(url+f'/api/projects/{pid}').json()
+    old=next(s for s in before['slides'] if s['id']==sid);new=next(s for s in after['slides'] if s['id']==sid)
+    other=all(s==next(a for a in after['slides'] if a['id']==s['id']) for s in before['slides'] if s['id']!=sid)
+    page.reload();page.wait_for_function('()=>window.visualPPTStudioQA?.snapshot().project&&!window.visualPPTStudioQA.snapshot().projectLoading')
+    reopened=page.request.get(url+f'/api/projects/{pid}').json()
+    stable=next(s for s in reopened['slides'] if s['id']==sid)['elements']==new['elements']
+    saved=any(e.get('style',{}).get('size')==size for e in new['elements'] if e['kind']=='text')
+    return {'pass':other and stable and saved and old['images']==new['images'],
+            'other_page_unchanged':other,'saved_after_refresh':stable,'uploaded_images_unchanged':old['images']==new['images']}
 
 
 def main():
@@ -232,6 +260,7 @@ def main():
             if not args.skip_workflow:
                 print('Testing two-page upload/rebuild/save/refresh/export',flush=True)
                 report['workflow']['upload_auto_rebuild']=workflow_fixture(page,url,data_root,project)
+                report['workflow']['manual_drawer']=workflow_manual_drawer(page,url,report['workflow']['upload_auto_rebuild']['project_id'],folder)
             browser.close()
         report['layout_contract_pass']=all(p['layout_contract_pass'] for p in report['pages'])
         report['workflow_pass']=all(v['pass'] for v in report['workflow'].values())

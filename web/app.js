@@ -11,19 +11,11 @@ function textFontRuns(text,latin,east){return (String(text).match(/[\u2E80-\u9FF
 const json = x => JSON.stringify(x,null,2);
 let noticeTimer;
 function toast(message,isError=false){let d=$('notice');d.textContent=message;d.className='notice'+(isError?' error':'');clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>d.classList.add('hidden'),6500)}
-async function api(url,options={}){
- let r;try{r=await fetch(url,options)}catch(e){
-  if(e instanceof TypeError)throw new Error(`无法连接本地 VisualPPTStudio 服务（${location.origin}）。服务可能已停止，请重新启动应用后刷新；本次上传未提交。`);
-  throw e;
- }
- let data;let raw=await r.text();try{data=JSON.parse(raw)}catch{data={detail:raw.slice(0,350)}}
- if(!r.ok)throw new Error(typeof data.detail==='string'?data.detail:json(data.detail));
- return data;
-}
-const post=(u,b={})=>api(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
-const put=(u,b)=>api(u,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+const api=(url,options={})=>window.StudioAPI.request(url,options);
+const post=(url,body={})=>window.StudioAPI.post(url,body);
+const put=(url,body)=>window.StudioAPI.put(url,body);
 async function run(fn){try{await fn()}catch(e){console.error(e);toast(e.message||String(e),true)}}
-function renderOptimizationLog(){const target=$('calibrationDeckResults');if(!target)return;const entries=state.optimizationRun?.log||[],suggestions=state.calibrationDeck||[],memory=state.optimizationRun?.memory;const recentMemory=(memory?.history||[]).slice(-4).reverse();const memoryDetails=recentMemory.length?`<details class="deck-review-row"><summary><strong>最近逐轮完整记录（全部差异、DeepSeek反馈、候选参数、实测结果）</strong></summary>${recentMemory.map(h=>`<p><b>${esc(h.slide_id)} 第${h.round}轮 · ${esc(h.outcome)} · ${h.before??'—'}→${h.after??'—'}（${h.delta==null?'—':`${h.delta>=0?'+':''}${h.delta}`}）${h.candidate_applied?' · 已应用候选':''}</b><br>原稿/实渲染差异：${esc(JSON.stringify(h.differences_before||[]))}<br>DeepSeek反馈：${esc((h.issues||[]).join('；')||'无')}<br>本轮参数：${esc(JSON.stringify(h.corrections||[])||'无')}</p><p>本轮渲染后剩余差异：${esc(JSON.stringify(h.differences_after||[])||'未记录')}</p>`).join('')}</details>`:'';const memoryHtml=memory?`<div class="deck-review-row"><strong>跨轮经验记忆</strong><span>已记录 ${memory.history?.length||0} 次实测；${memory.playbook?.length||0} 条经提升验证的提示词经验（版本 ${memory.playbook?.length||0}）。未提升的候选/反馈也会留档并供下一轮参考。</span></div>${memoryDetails}`:'';const logHtml=entries.map(x=>`<div class="deck-review-row ${x.kind==='error'?'warn':''}"><strong>${esc(x.title)}</strong><span>${esc(x.message)}</span></div>`).join('');const suggestionHtml=suggestions.map(x=>x.ok?`<div class="deck-review-row"><strong>${esc(x.slide_id)} · DeepSeek诊断 ${x.result.score}/100</strong><span>${x.autoApplied?`已应用候选 ${x.result.corrections.length} 项`:(x.applyError?`应用失败：${esc(x.applyError)}`:x.result.corrections.length?`候选调整 ${x.result.corrections.length} 个文字框`:'未建议调整')}</span><button class="btn small" data-calibration-slide="${esc(x.slide_id)}">查看建议</button></div>`:`<div class="deck-review-row warn"><strong>${esc(x.slide_id)} · 监督失败</strong><span>${esc(x.error)}</span></div>`).join('');target.innerHTML=memoryHtml+logHtml+suggestionHtml||'<p class="hint">点击「启动整页自动优化」后，这里会逐轮显示真实渲染分数和Agent动作。</p>';target.querySelectorAll('[data-calibration-slide]').forEach(btn=>btn.onclick=()=>{const id=btn.dataset.calibrationSlide,s=state.project.slides.find(y=>y.id===id),entry=state.calibrationDeck.find(y=>y.slide_id===id&&y.ok);if(!s||!entry)return;state.sid=id;state.elements=JSON.parse(JSON.stringify(s.elements));state.elsSid=id;state.selected=state.elements[0]?.id||null;showCalibration(entry.result);assignTab('qa');toast(`已载入 ${id} 的校准建议；系统会以真实渲染分判断候选是否保留`)})}
+function renderOptimizationLog(){const target=$('calibrationDeckResults');if(!target)return;const entries=state.optimizationRun?.log||[],suggestions=state.calibrationDeck||[],memory=state.optimizationRun?.memory;const recentMemory=(memory?.history||[]).slice(-4).reverse();const memoryDetails=recentMemory.length?`<details class="deck-review-row"><summary><strong>最近逐轮完整记录（全部差异、DeepSeek反馈、候选参数、实测结果）</strong></summary>${recentMemory.map(h=>`<p><b>${esc(h.slide_id)} 第${h.round}轮 · ${esc(h.outcome)} · ${h.before??'—'}→${h.after??'—'}（${h.delta==null?'—':`${h.delta>=0?'+':''}${h.delta}`}）${h.candidate_applied?' · 已应用候选':''}</b><br>原稿/实渲染差异：${esc(JSON.stringify(h.differences_before||[]))}<br>DeepSeek反馈：${esc((h.issues||[]).join('；')||'无')}<br>本轮参数：${esc(JSON.stringify(h.corrections||[])||'无')}</p><p>本轮渲染后剩余差异：${esc(JSON.stringify(h.differences_after||[])||'未记录')}</p>`).join('')}</details>`:'';const memoryHtml=memory?`<div class="deck-review-row"><strong>跨轮经验记忆</strong><span>已记录 ${memory.history?.length||0} 次实测；${memory.playbook?.length||0} 条经提升验证的提示词经验（版本 ${memory.playbook?.length||0}）。未提升的候选/反馈也会留档并供下一轮参考。</span></div>${memoryDetails}`:'';const logHtml=entries.map(x=>`<div class="deck-review-row ${x.kind==='error'?'warn':''}"><strong>${esc(x.title)}</strong><span>${esc(x.message)}</span></div>`).join('');const suggestionHtml=suggestions.map(x=>x.ok?`<div class="deck-review-row"><strong>${esc(x.slide_id)} · DeepSeek诊断 ${x.result.score}/100</strong><span>${x.autoApplied?`已应用候选 ${x.result.corrections.length} 项`:(x.applyError?`应用失败：${esc(x.applyError)}`:x.result.corrections.length?`候选调整 ${x.result.corrections.length} 个文字框`:'未建议调整')}</span><button class="btn small" data-calibration-slide="${esc(x.slide_id)}">查看建议</button></div>`:`<div class="deck-review-row warn"><strong>${esc(x.slide_id)} · 监督失败</strong><span>${esc(x.error)}</span></div>`).join('');target.innerHTML=memoryHtml+logHtml+suggestionHtml||'<p class="hint">点击「启动样式诊断」后，这里会逐轮显示真实渲染分数和Agent动作。</p>';target.querySelectorAll('[data-calibration-slide]').forEach(btn=>btn.onclick=()=>{const id=btn.dataset.calibrationSlide,s=state.project.slides.find(y=>y.id===id),entry=state.calibrationDeck.find(y=>y.slide_id===id&&y.ok);if(!s||!entry)return;state.sid=id;state.elements=JSON.parse(JSON.stringify(s.elements));state.elsSid=id;state.selected=state.elements[0]?.id||null;showCalibration(entry.result);assignTab('qa');toast(`已载入 ${id} 的校准建议；系统会以真实渲染分判断候选是否保留`)})}
 function logOptimization(title,message,kind='info'){if(!state.optimizationRun)state.optimizationRun={best:{},stopped:{},rounds:0,log:[]};state.optimizationRun.log=state.optimizationRun.log||[];state.optimizationRun.log.push({title,message,kind});renderOptimizationLog()}
 function pid(){if(!state.project)throw Error('请先创建或选择项目');return state.project.id}
 function uploadUndoKey(projectId){return `visual-ppt-studio:upload-undo:${projectId}`}
@@ -55,7 +47,7 @@ function alignGlyphBaselines(){
  }
 }
 function renderProjects(){
- $('projectList').innerHTML=state.projects.map(p=>`<button class="project-item ${state.project?.id===p.id?'active':''}" data-pid="${p.id}"><strong>${esc(p.title)}</strong><small>${p.pages}页 · 设计图${p.images}张 · ${p.locked?'已锁定':'未锁定'}</small></button>`).join('')||'<p class="hint">还没有项目</p>';
+ $('projectList').innerHTML=window.StudioComponents.AppShell.projectItems(state.projects,state.project?.id);
  $('projectList').querySelectorAll('[data-pid]').forEach(x=>x.addEventListener('click',()=>run(()=>loadProject(x.dataset.pid))));
  $('batchProjects').innerHTML=state.projects.map(p=>`<div class="checkbox-row"><input type="checkbox" class="batch-check" value="${p.id}" ${p.locked?'checked':''}><label>${esc(p.title)} <small>(${p.pages}页，${p.locked?'已锁定':'未锁定'})</small></label></div>`).join('')||'暂无项目';
 }
@@ -71,14 +63,14 @@ async function loadProject(id,preferredSid=null){
   state.prompts=null;state.aiImagePrompts={};state.pairReports={};state.calibration=null;state.lastReport=null;state.reconstructionPages=[];
   try{state.lastReport=await api(`/build/${id}/report_editable.json`)}catch{}
   if(serial!==projectLoadSerial)return;
-  state.selected=null;state.masks=[];state.elements=[];state.elsSid=null;
+  state.selected=null;state.masks=[];state.elements=[];state.elsSid=null;state.labRegions=[];$('autoRebuildResult').textContent='等待本页处理，可打开手动调整读取识别候选。';
   await refreshProjects();if(serial!==projectLoadSerial)return;
-  renderEverything();await refreshReconstructionProgress();
+  renderEverything();await refreshReconstructionProgress();if(state.tab==='qa'){try{sessionStorage.setItem('visualPPTStudio.qaProject',id)}catch{}if(!repairAutoPromise)run(restoreRepairCandidate);}
  }finally{if(serial===projectLoadSerial){setProjectLoading(false);renderAgentReadiness();}}
 }
 function renderEverything(){
  let p=state.project;if(!p){$('projectTitle').textContent='可编辑 AI PPT 生产台';return;}
- $('projectTitle').textContent=p.title;$('projectSubtitle').textContent=`${p.topic.slice(0,140)} · ${p.audience} · ${p.slides.length}页`;
+ window.StudioComponents.AppShell.setProjectContext(p);
  $('planStats').innerHTML=stat('页面',p.slides.length)+stat('完整设计稿',p.slides.filter(s=>s.images.design).length)+stat('无文字背景',p.slides.filter(s=>s.images.clean).length)+stat('规划状态',p.locked?'已锁定':'可编辑');
  $('uploadStats').innerHTML=stat('已规划',p.slides.length)+stat('设计图',p.slides.filter(s=>s.images.design).length)+stat('无字底图',p.slides.filter(s=>s.images.clean).length)+stat('素材',p.slides.reduce((n,s)=>n+Object.keys(s.images).filter(r=>r.startsWith('asset_')).length,0));
  $('planList').innerHTML=p.slides.map(s=>`<button class="plan-entry ${s.id===state.sid?'active':''}" data-sid="${s.id}"><b>${s.id}</b><div><strong>${esc(s.title||`第${s.number}页 · 待规划`)}</strong><small>${esc(s.intent.slice(0,80))} · ${s.images.design?'◆设计稿':''}${s.images.clean?' ◆底图':''}</small></div></button>`).join('');
@@ -89,8 +81,8 @@ function renderEverything(){
  $('slotSlide').innerHTML=p.slides.map(s=>`<option value="${s.id}" ${s.id===state.sid?'selected':''}>${s.id} · ${esc(s.title||`第${s.number}页 · 待规划`)}</option>`).join('');
  $('wpsRenderSlide').innerHTML=p.slides.map(s=>`<option value="${s.id}" ${s.id===state.sid?'selected':''}>${s.id}</option>`).join('');renderAssets();renderCurrentUpload();renderAgentReadiness();renderPrompts();renderEditor();renderQAImages();renderStaleExportStatus();renderPairReport();
 }
-const stat=(label,value)=>`<div class="stat"><strong>${esc(value)}</strong><small>${esc(label)}</small></div>`;
-function chooseSlide(sid){if(state.projectLoading){toast('项目正在加载，请稍后再切页');return;}if(state.autoCandidateSid&&state.autoCandidateSid!==sid){toast(`请先确认并保存 ${state.autoCandidateSid} 的 Agent 候选，再切换页面`,true);$('slotSlide').value=state.sid;return}state.sid=sid;state.elements=[];state.selected=null;state.masks=[];state.labRegions=[];renderEverything();if(state.tab==='lab')run(labRefresh)}
+const stat=(label,value)=>window.StudioComponents.StatCard.render(label,value);
+function chooseSlide(sid){if(state.projectLoading){toast('项目正在加载，请稍后再切页');return;}if(state.autoCandidateSid&&state.autoCandidateSid!==sid){toast(`请先确认并保存 ${state.autoCandidateSid} 的 Agent 候选，再切换页面`,true);$('slotSlide').value=state.sid;return}state.sid=sid;state.elements=[];state.selected=null;state.masks=[];state.labRegions=[];renderEverything();if(state.tab==='upload'){$('autoRebuildResult').textContent='正在读取本页识别候选…';run(restoreAgentCandidatePreview)}if(state.tab==='lab')run(labRefresh)}
 function renderAssets(){
  const p=state.project;if(!p)return;
  $('assetTable').innerHTML='<div class="asset-row head"><div>页面</div><div>完整设计稿</div><div>无文字底图</div><div>独立素材</div></div>'+p.slides.map(s=>{
@@ -206,18 +198,34 @@ async function renderFormulaPreview(e){
   if(doc.querySelector('parsererror'))throw Error('MathML 预览格式异常');node.replaceChildren(document.importNode(doc.documentElement,true));
  }catch(err){const node=findNode();if(node){node.textContent=e.text;node.title='公式预览失败：'+err.message}}
 }
-function renderQAImages(){if(!state.project)return;const report=state.lastReport,previews=report?.previews||[],mode=report?.mode||'editable',stale=!!report&&(report.project_revision!==state.project.revision||!report.artifact_sha256||report.artifact_valid_current===false);
- $('qaComparisons').innerHTML=state.project.slides.map(s=>{const name=previews[s.number-1],hasPreview=!stale&&!!name,comparison=report?.visual_comparisons?.find(c=>c.slide_id===s.id),score=comparison?.objective_score?.score;
-  const run=state.optimizationRun,paused=!!run?.disabled?.[s.id],pageStatus=run?.pageStatus?.[s.id];
-  return `<article class="qa-page"><div class="qa-page-title"><strong>${esc(s.id)} · ${esc(s.title||`第${s.number}页`)}</strong><span>${paused?'已暂停此页':esc(pageStatus||'')}${stale?' · 项目有未导出的修改':hasPreview?` · ${esc(report.preview_renderer||'PPTX实际渲染')}`:' · 尚无渲染预览'}${run?.running&&stale?' · 新一轮优化中':''}${Number.isFinite(score)&&!stale?` · 实测 ${score}/100`:''}</span>${run?.running?`<button class="btn small ${paused?'':'danger'}" data-page-optimization="${esc(s.id)}">${paused?'恢复此页优化':'暂停此页优化'}</button>`:''}</div><div class="qa-page-images"><div><label>目标设计稿</label>${s.images.design?`<img src="${murl(s.images.design)}" alt="${esc(s.id)} 原始设计稿">`:'<div class="qa-preview-empty">尚未上传该页设计稿</div>'}</div><div><label>导出文件的实际渲染 · 第${s.number}页</label>${hasPreview?`<img src="/build/${pid()}/${name}?t=${Date.now()}" alt="${esc(s.id)} 实际渲染预览">`:`<div class="qa-preview-empty">${stale?'项目内容已变更；请重新导出后查看对应预览':'尚无该页真实渲染图；请导出并渲染完整PPTX'}</div>`}</div></div></article>`}).join('');
- $('qaComparisons').querySelectorAll('[data-page-optimization]').forEach(button=>button.onclick=()=>{const run=state.optimizationRun;if(!run?.running)return;const id=button.dataset.pageOptimization;run.disabled=run.disabled||{};run.pageStatus=run.pageStatus||{};run.disabled[id]=!run.disabled[id];run.pageStatus[id]=run.disabled[id]?'用户暂停该页；其他页继续运行':'已恢复，将从下一轮继续';logOptimization(`${id} · ${run.disabled[id]?'单页暂停':'恢复单页优化'}`,run.disabled[id]?'仅停止该页后续 DeepSeek 校准；仍保留该页实测评分，其他页不受影响。':'该页将在下一轮重新加入校准。');renderQAImages()});
+function renderQAImages(){
+ if(!state.project)return;
+ const report=state.lastReport,previews=report?.previews||[],stale=!!report&&(report.project_revision!==state.project.revision||!report.artifact_sha256||report.artifact_valid_current===false);
+ const r=repairState,sameRevision=r?.project_id===state.project.id&&(r.base_revision===state.project.revision||r.committed_revision===state.project.revision);
+ const browserReady=sameRevision&&r.comparison&&r.validation_complete!==false&&['validated_pending_commit','requires_review','committed','checked_current_project'].includes(r.status);
+ const base=browserReady?`/api/projects/${r.project_id}/repair/${r.token}/files/`:null;
+ $('qaComparisons').innerHTML=state.project.slides.map(s=>{
+  const name=previews[s.number-1],hasPreview=!stale&&!!name,comparison=report?.visual_comparisons?.find(c=>c.slide_id===s.id),score=comparison?.objective_score?.score;
+  const hasBrowser=browserReady&&r.diagnosis.pages.some(p=>p.slide_id===s.id),pending=hasBrowser&&!r.committed&&r.actions.length>0;
+  const title=hasBrowser?(pending?'候选浏览器预览 · 尚未提交当前项目':r.committed?'已提交布局的浏览器验证截图':'当前项目浏览器检查截图'):'当前项目尚无对应浏览器验收截图';
+  const status=hasBrowser?(pending?'候选与当前项目分开保存；提交后再导出，才包含这些修复':r.committed?'布局已提交；导出文件的哈希与兼容性另外检查':'没有修改对象；查看报告中的待复核证据'):'请生成修复候选并执行浏览器验收；下方旧导出仅作兼容性参考';
+  const running=state.optimizationRun?.running,paused=state.optimizationRun?.disabled?.[s.id];
+  const control=running?`<button class="btn small" data-page-optimization="${esc(s.id)}">${paused?'恢复此页优化':'暂停此页优化'}</button>`:'';
+  const target=s.images.design?`<img src="${murl(s.images.design)}" alt="${esc(s.id)} 原始设计稿">`:'<div class="qa-preview-empty">尚未上传设计稿</div>';
+  const primary=hasBrowser?`<img data-browser-candidate="${esc(s.id)}" src="${base}after/validation/${s.id}_stage.png" alt="${esc(s.id)} ${esc(title)}">`:'<div class="qa-preview-empty">尚无浏览器验收截图。生成候选后点击「浏览器验收候选」。</div>';
+  const current=hasBrowser&&!r.committed?`<div><label>当前项目浏览器截图 · 修复前版本 ${r.base_revision}</label><img src="${base}before/validation/${s.id}_stage.png" alt="${s.id} 未提交修复的当前项目"></div>`:'';
+  const auxiliary=hasPreview?`<img src="/build/${pid()}/${name}" alt="${s.id} LibreOffice辅助预览">`:`<div class="qa-preview-empty">${stale?'导出文件已过期，请重新导出':'没有辅助渲染预览'}</div>`;
+  return `<article class="qa-page"><div class="qa-page-title"><strong>${esc(s.id)} · ${esc(s.title)}</strong><span>${esc(status)}</span>${control}</div><div class="qa-page-images"><div><label>目标设计稿</label>${target}</div><div><label>${esc(title)}</label>${primary}</div></div><details><summary>当前项目与导出文件的辅助证据（不会替代候选浏览器验收）</summary><button class="btn small" data-export-current>导出当前项目（不含候选）</button><div class="qa-page-images">${current}<div><label>${esc(report?.preview_renderer||'LibreOffice')} · 导出版本 ${report?.project_revision??'—'}${Number.isFinite(score)?` · 辅助指标 ${score}/100`:''}，不是候选验收结果</label>${auxiliary}</div></div></details></article>`;
+ }).join('');
+ $('qaComparisons').querySelectorAll('[data-export-current]').forEach(button=>button.onclick=()=>run(()=>exportDeck('editable',false,0,true)));
+ $('qaComparisons').querySelectorAll('[data-page-optimization]').forEach(button=>button.onclick=()=>{const run=state.optimizationRun;if(!run?.running)return;const id=button.dataset.pageOptimization;run.disabled=run.disabled||{};run.disabled[id]=!run.disabled[id];logOptimization(id+' · '+(run.disabled[id]?'暂停':'恢复'),'仅控制此页后续样式建议；保留已有结果');renderQAImages()});
 }
 function renderStaleExportStatus(){const report=state.lastReport;if(!report||!state.project)return;const stale=report.project_revision!==state.project.revision||!report.artifact_sha256||report.artifact_valid_current===false;if(!stale)return;
  const reason=report.artifact_status||`报告版本 ${report.project_revision??'未知'}，当前项目版本 ${state.project.revision}`;
  $('renderReport').innerHTML=`<p class="warn">上次导出与当前项目不同步：${esc(reason)}。旧 PPTX 和旧预览已停用，请重新导出当前版本。</p><button class="btn primary" id="refreshCurrentExport">重新导出当前 PPTX</button>`;
  $('refreshCurrentExport').onclick=()=>run(async()=>{assignTab('qa');await exportDeck('editable',false)});
 }
-function assignTab(tab){state.tab=tab;document.querySelectorAll('.tabs [data-tab]').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='tab-'+tab));if(state.project)renderEverything();if(tab==='lab'&&state.project)run(labRefresh)}
+function assignTab(tab){if(tab==='lab'){run(()=>openManualDrawer());return;}state.tab=tab;try{if(tab==='qa'&&state.project)sessionStorage.setItem('visualPPTStudio.qaProject',state.project.id);else sessionStorage.removeItem('visualPPTStudio.qaProject')}catch{}window.StudioComponents.AppShell.setActiveNavigation(tab);if(tab==='upload')run(restoreAgentCandidatePreview);if(tab==='qa')run(restoreRepairCandidate);if(state.project)renderEverything();if(tab==='lab'&&state.project)run(labRefresh)}
 async function saveSlide(){let s=slide();const changes={title:$('slideTitle').value,body:$('slideBody').value,intent:$('slideIntent').value,notes:$('slideNotes').value};
  await put(`/api/projects/${pid()}/slides/${s.id}`,changes);await loadKeep(s.id);toast('已保存 '+s.id+' 内容');}
 async function loadKeep(sid){const id=pid();await loadProject(id,sid);}
@@ -277,11 +285,11 @@ async function importWPSRender(){
  $('wpsComparisons').innerHTML=result.pages.map(page=>{const source=state.project.slides.find(s=>s.id===page.slide_id);return `<article class="qa-page"><h3>${esc(page.slide_id)} · WPS 用户导出</h3><div class="qa-image-pair"><img src="/media/${projectId}/${source.images.design}" alt="原始设计稿"><img src="/wps-preview/${projectId}/${result.import_id}/${page.preview}" alt="WPS 实际导出"></div></article>`}).join('');
 }
 async function runQA(){let q=await api(`/api/projects/${pid()}/qa`);$('qaList').textContent=`硬错误 ${q.counts.errors} · 警告 ${q.counts.warnings}\n`+q.pages.map(s=>`${s.slide_id}: ${s.errors.map(x=>'❌ '+x).concat(s.warnings.map(x=>'⚠ '+x)).join('\n    ')||'✅ 规则检查通过'}`).join('\n');toast(q.ok?'几何/资源检查完成':'发现硬错误，请修复',!q.ok);return q}
-async function exportDeck(mode='editable',supervise=false,round=0){if(round===0&&supervise&&$('autoSupervise')?.checked&&$('autoApplyCalibration')?.checked){state.optimizationRun={best:{},stopped:{},disabled:{},pageStatus:{},noImprove:{},feedback:{},proposalAttempts:{},rejectedCandidates:{},lastCandidates:{},rollbackPending:{},stalledDiffs:{},rounds:0,log:[],memory:null,running:true,cancelRequested:false};$('aiCalibrate').textContent='停止自动优化';$('aiQAResult').textContent='自动优化已启动：保留上一轮可见预览；正在读取项目级经验记忆…';renderOptimizationLog();try{state.optimizationRun.memory=await api(`/api/projects/${pid()}/calibration-memory`)}catch(e){state.optimizationRun.memory={history:[],playbook:[]};logOptimization('经验记忆暂不可用',e.message,'error')}renderOptimizationLog()}else if(supervise&&round>0){$('aiQAResult').textContent=`第${round}轮候选已应用：上一轮成功渲染图仍保留在右侧；正在重新生成并实测…`;renderQAImages()}$('renderReport').textContent='正在调用真实PPTX导出和渲染程序…';let report=await post(`/api/projects/${pid()}/export?mode=${mode}`);state.lastReport=report;
- if(supervise&&state.optimizationRun?.cancelRequested){const run=state.optimizationRun;const restore=(report.visual_comparisons||[]).filter(c=>{const best=run.best?.[c.slide_id],score=c.objective_score?.score;return best&&Number.isFinite(score)&&(score<best.score||(score===best.score&&visualDifferenceProgress(best.differences||[],c.objective_score?.differences||[])<=0.001))});for(const c of restore){const s=state.project.slides.find(x=>x.id===c.slide_id),best=run.best[c.slide_id];if(s&&best?.elements)await put(`/api/projects/${pid()}/slides/${s.id}`,{elements:JSON.parse(JSON.stringify(best.elements)),title:s.title,body:s.body})}if(restore.length){await loadKeep(state.sid);report=await post(`/api/projects/${pid()}/export?mode=${mode}`);state.lastReport=report;renderQAImages()}run.running=false;$('aiCalibrate').textContent='启动整页自动优化';$('aiQAResult').textContent=restore.length?'已停止优化；未提升的候选已自动恢复最佳版，并完成真实渲染。':'已停止优化；当前渲染不低于最佳版，已保留。';logOptimization('用户停止优化',$('aiQAResult').textContent);return report}
+async function exportDeck(mode='editable',supervise=false,round=0,exportCurrent=false){if(!exportCurrent&&mode==='editable'&&repairState?.project_id===pid()&&repairState.status==='validated_pending_commit'&&repairState.base_revision===state.project.revision)throw Error('修复候选尚未提交。请先点击“提交已验证修复”，再导出；候选预览不代表当前文件。需要原版本时，可在辅助证据中明确选择“导出当前项目”。');if(round===0&&supervise&&$('autoSupervise')?.checked&&$('autoApplyCalibration')?.checked){state.optimizationRun={best:{},stopped:{},disabled:{},pageStatus:{},noImprove:{},feedback:{},proposalAttempts:{},rejectedCandidates:{},lastCandidates:{},rollbackPending:{},stalledDiffs:{},rounds:0,log:[],memory:null,running:true,cancelRequested:false};$('aiCalibrate').textContent='停止自动优化';$('aiQAResult').textContent='自动优化已启动：保留上一轮可见预览；正在读取项目级经验记忆…';renderOptimizationLog();try{state.optimizationRun.memory=await api(`/api/projects/${pid()}/calibration-memory`)}catch(e){state.optimizationRun.memory={history:[],playbook:[]};logOptimization('经验记忆暂不可用',e.message,'error')}renderOptimizationLog()}else if(supervise&&round>0){$('aiQAResult').textContent=`第${round}轮候选已应用：上一轮成功渲染图仍保留在右侧；正在重新生成并实测…`;renderQAImages()}$('renderReport').textContent='正在调用真实PPTX导出和渲染程序…';let report=await post(`/api/projects/${pid()}/export?mode=${mode}`);state.lastReport=report;
+ if(supervise&&state.optimizationRun?.cancelRequested){const run=state.optimizationRun;const restore=(report.visual_comparisons||[]).filter(c=>{const best=run.best?.[c.slide_id],score=c.objective_score?.score;return best&&Number.isFinite(score)&&(score<best.score||(score===best.score&&visualDifferenceProgress(best.differences||[],c.objective_score?.differences||[])<=0.001))});for(const c of restore){const s=state.project.slides.find(x=>x.id===c.slide_id),best=run.best[c.slide_id];if(s&&best?.elements)await put(`/api/projects/${pid()}/slides/${s.id}`,{elements:JSON.parse(JSON.stringify(best.elements)),title:s.title,body:s.body})}if(restore.length){await loadKeep(state.sid);report=await post(`/api/projects/${pid()}/export?mode=${mode}`);state.lastReport=report;renderQAImages()}run.running=false;$('aiCalibrate').textContent='启动样式诊断';$('aiQAResult').textContent=restore.length?'已停止优化；未提升的候选已自动恢复最佳版，并完成真实渲染。':'已停止优化；当前渲染不低于最佳版，已保留。';logOptimization('用户停止优化',$('aiQAResult').textContent);return report}
  const unsplit=(report.coverage||[]).filter(c=>c.ocr_text_regions>=5&&c.native_text_objects<Math.max(3,c.ocr_text_regions*.55));
- const comparisons=(report.visual_comparisons||[]).map(c=>c.error?`<li>${esc(c.slide_id)}：差异图生成失败：${esc(c.error)}</li>`:`<li>${esc(c.slide_id)}：自动实测 ${c.objective_score?.score??'不可评分'}/100（目标90）· 文字 ${c.objective_score?.components?.text??'—'} · 坐标 ${c.objective_score?.components?.position??'—'} · 格式 ${c.objective_score?.components?.typography??'—'} · 笔画粗细 ${c.objective_score?.components?.weight??'—'} · 中文 ${c.objective_score?.cjk_expected_regions?`${c.objective_score.cjk_detected_regions}/${c.objective_score.cjk_expected_regions}`:'—'} · 公式 ${c.objective_score?.formula_verified===false?'未通过':c.objective_score?.components?.formula??'—'} · 背景 ${c.objective_score?.components?.background??'—'} · 溢出风险 ${c.objective_score?.layout_warnings?.length||0} · 差异 ${(c.objective_score?.differences||[]).slice(0,8).map(d=>esc(describeVisualDifference(d))).join("；")||"未检测到显著文本差异"} · <a href="/lab/${pid()}/${esc(c.slide_id)}/${esc(c.diff)}" target="_blank" rel="noopener">查看差异热图</a></li>`).join('');
- const splitWarning=unsplit.length?unsplit.map(c=>`<p class="warn">${esc(c.slide_id)}：OCR检测到${c.ocr_text_regions}个文字区域，但只有${c.native_text_objects}个可编辑文字对象。当前版面还没拆分；DeepSeek不能把一个大文本框精确校成多框，因此本轮先不做无效校准。请对这些页各运行一次「Agent 自动重建」并确认，之后90分闭环才会启动。</p>`).join(''):'';
+ const comparisons=(report.visual_comparisons||[]).map(c=>c.error?`<li>${esc(c.slide_id)}：差异图生成失败：${esc(c.error)}</li>`:`<li>${esc(c.slide_id)}：自动实测 ${c.objective_score?.score??'不可评分'}/100（辅助分项指标）· 文字 ${c.objective_score?.components?.text??'—'} · 坐标 ${c.objective_score?.components?.position??'—'} · 格式 ${c.objective_score?.components?.typography??'—'} · 笔画粗细 ${c.objective_score?.components?.weight??'—'} · 中文 ${c.objective_score?.cjk_expected_regions?`${c.objective_score.cjk_detected_regions}/${c.objective_score.cjk_expected_regions}`:'—'} · 公式 ${c.objective_score?.formula_verified===false?'未通过':c.objective_score?.components?.formula??'—'} · 背景 ${c.objective_score?.components?.background??'—'} · 溢出风险 ${c.objective_score?.layout_warnings?.length||0} · 差异 ${(c.objective_score?.differences||[]).slice(0,8).map(d=>esc(describeVisualDifference(d))).join("；")||"未检测到显著文本差异"} · <a href="/lab/${pid()}/${esc(c.slide_id)}/${esc(c.diff)}" target="_blank" rel="noopener">查看差异热图</a></li>`).join('');
+ const splitWarning=unsplit.length?unsplit.map(c=>`<p class="warn">${esc(c.slide_id)}：OCR检测到${c.ocr_text_regions}个文字区域，但只有${c.native_text_objects}个可编辑文字对象。当前版面还没拆分；DeepSeek不能把一个大文本框精确校成多框，因此本轮先不做无效校准。请使用第三步定向检查与修复。</p>`).join(''):'';
  $('renderReport').innerHTML=`<p class="good">已成功导出 ${esc(report.filename)}</p><p>${report.native_text?.ok===true?'✅ 原生文本逐项匹配':'文本校验：'+esc(report.native_text?.notice||'请检查')}</p><p>渲染预览：${report.previews.length}页${report.preview_renderer?` · 引擎：${esc(report.preview_renderer)}`:''}。预览和下载文件对应同一份PPTX。</p>${comparisons?`<p>逐页实测（非模型自评）</p><ul>${comparisons}</ul>`:''}${splitWarning}<p class="warn">${report.qa.warnings.some(w=>w.message.includes('栅格文字'))?'注意：本页仍有部分位图文字，仅被提升的区域可编辑。':'文字内容、公式内容及局部视觉仍需按实测分确认。'}</p><p>${esc(report.render_warning||'')}</p><a href="/build/${pid()}/${report.filename}" class="btn" download>下载 PPTX</a> ${report.pdf?`<a href="/build/${pid()}/${report.pdf}" class="btn" download>下载PDF</a>`:''}`;
  renderQAImages();toast('已导出PPTX（'+mode+'）');
  if(mode==='editable'&&supervise&&$('autoSupervise')?.checked&&$('autoApplyCalibration')?.checked){
@@ -289,18 +297,16 @@ async function exportDeck(mode='editable',supervise=false,round=0){if(round===0&
   const measurement=measured.map(c=>`${c.slide_id} ${c.objective_score.score}/100（文字${c.objective_score.components?.text??'—'} · 位置${c.objective_score.components?.position??'—'} · 格式${c.objective_score.components?.typography??'—'} · 公式${c.objective_score.components?.formula??'—'} · 溢出风险${c.objective_score.layout_warnings?.length||0}）`).join('；');
    logOptimization(round===0?'优化前基线 · 实际渲染评分':`第${round}轮优化后 · 实际渲染评分`,measurement||'本轮没有可用的实测分数',measured.length?'info':'error');
   const unscored=(report.visual_comparisons||[]).filter(c=>c.error||!Number.isFinite(c.objective_score?.score));
-  if(unscored.length){const detail=unscored.map(c=>`${c.slide_id}: ${c.error||c.objective_score?.notice||'实测评分不可用'}`).join('；');if(state.optimizationRun){state.optimizationRun.running=false;$('aiCalibrate').textContent='启动整页自动优化'}$('aiQAResult').textContent=`自动优化因实测评分技术阻塞而暂停：${detail}。此页未达标，不会误标通过。`;logOptimization('评分技术阻塞',detail,'error');return report}
+  if(unscored.length){const detail=unscored.map(c=>`${c.slide_id}: ${c.error||c.objective_score?.notice||'实测评分不可用'}`).join('；');if(state.optimizationRun){state.optimizationRun.running=false;$('aiCalibrate').textContent='启动样式诊断'}$('aiQAResult').textContent=`自动优化因实测评分技术阻塞而暂停：${detail}。此页未达标，不会误标通过。`;logOptimization('评分技术阻塞',detail,'error');return report}
   const missingCjk=(report.visual_comparisons||[]).filter(c=>c.objective_score?.status==='cjk_text_not_detected');
-  if(missingCjk.length){const reasons=missingCjk.map(c=>`${c.slide_id} 中文识别 ${c.objective_score.cjk_detected_regions}/${c.objective_score.cjk_expected_regions}`).join('；');$('aiQAResult').textContent=`自动优化暂停：${reasons}。当前中文字体/渲染不可验证，已阻止 DeepSeek 根据缺字画面乱调位置和字号。请确认本机字体后重新导出；系统只允许从检测到的常见字体列表中选择中文字体。`;logOptimization('中文渲染门禁',reasons+'；先修复真实渲染，再运行模型校准','error');if(state.optimizationRun){state.optimizationRun.running=false;$('aiCalibrate').textContent='启动整页自动优化'}return report}
+  if(missingCjk.length){const reasons=missingCjk.map(c=>`${c.slide_id} 中文识别 ${c.objective_score.cjk_detected_regions}/${c.objective_score.cjk_expected_regions}`).join('；');$('aiQAResult').textContent=`自动优化暂停：${reasons}。当前中文字体/渲染不可验证，已阻止 DeepSeek 根据缺字画面乱调位置和字号。请确认本机字体后重新导出；系统只允许从检测到的常见字体列表中选择中文字体。`;logOptimization('中文渲染门禁',reasons+'；先修复真实渲染，再运行模型校准','error');if(state.optimizationRun){state.optimizationRun.running=false;$('aiCalibrate').textContent='启动样式诊断'}return report}
   if(unsplit.length){
-   const run=state.optimizationRun;const pending=unsplit.filter(c=>!run.prepared?.[c.slide_id]);
-   if(!pending.length){$('aiQAResult').textContent=`自动优化暂停：${unsplit.map(c=>`${c.slide_id}拆分后仍只有${c.native_text_objects}个原生文字对象`).join('；')}。已保留本轮实测分数，未达标页面需要检查OCR覆盖。`;logOptimization('自动拆分未达标',unsplit.map(c=>`${c.slide_id}: OCR ${c.ocr_text_regions} 区域 / 可编辑 ${c.native_text_objects} 框`).join('；'),'error');if(state.optimizationRun){state.optimizationRun.running=false;$('aiCalibrate').textContent='启动整页自动优化'}return report}
-   run.prepared=run.prepared||{};$('aiQAResult').textContent=`自动优化准备：${pending.map(c=>c.slide_id).join('、')}文字框不足，正在自动运行OCR/DeepSeek识别并拆成独立文本框…`;
-   try{for(const c of pending){const previous=state.sid;state.sid=c.slide_id;await autoRebuildSlide();if(state.autoCandidateSid!==c.slide_id)throw Error(`${c.slide_id}未能生成自动重建候选`);await confirmAutoRebuild(true);run.prepared[c.slide_id]=true;logOptimization(`${c.slide_id} · 自动拆分文字`,`${c.ocr_text_regions} 个 OCR 区域转为独立可编辑对象后，将重新渲染评分`);state.sid=previous}await loadKeep(state.sid);return exportDeck(mode,true,round+1)}catch(e){$('aiQAResult').textContent=`自动拆分失败：${e.message}。没有进入参数盲调；请检查该页 design/clean 配对或OCR服务。`;logOptimization('自动拆分失败',e.message,'error');if(state.optimizationRun){state.optimizationRun.running=false;$('aiCalibrate').textContent='启动整页自动优化'}return report}
+   await stageRepairCheck();if(state.optimizationRun)state.optimizationRun.running=false;
+   $('aiCalibrate').textContent='启动样式诊断';$('aiQAResult').textContent='原生文字覆盖不足，已停止 AI 参数校准。请使用上方定向修复候选；不会重跑第二步或覆盖已确认文字。';return report;
   }
   try{
    const run=state.optimizationRun||(state.optimizationRun={best:{},stopped:{},noImprove:{},feedback:{},proposalAttempts:{},rollbackPending:{},rounds:0,log:[],memory:{history:[],playbook:[]},running:true,cancelRequested:false});
-   if(run.cancelRequested){run.running=false;$('aiCalibrate').textContent='启动整页自动优化';$('aiQAResult').textContent='已按你的要求停止自动优化；保留当前最佳实测版本。';logOptimization('用户停止优化',$('aiQAResult').textContent);return report}
+   if(run.cancelRequested){run.running=false;$('aiCalibrate').textContent='启动样式诊断';$('aiQAResult').textContent='已按你的要求停止自动优化；保留当前最佳实测版本。';logOptimization('用户停止优化',$('aiQAResult').textContent);return report}
    const eligible=[];let rollback=false;
    for(const c of report.visual_comparisons||[]){const score=c.objective_score?.score;if(!Number.isFinite(score)||run.stopped[c.slide_id]||run.disabled?.[c.slide_id])continue;
     let best=run.best[c.slide_id];const priorBestScore=best?.score??null,validatingRollback=!!run.rollbackPending?.[c.slide_id];let acceptedDifferenceProgress=false;
@@ -316,7 +322,7 @@ async function exportDeck(mode='editable',supervise=false,round=0){if(round===0&
      if(run.noCandidateStreak[c.slide_id]>=2){run.stopped[c.slide_id]='连续两轮没有可执行参数，已停止空转并保留当前最佳实测版';logOptimization(`${c.slide_id} · 无变化保护停止`,`${run.stopped[c.slide_id]}。`,'error')}
      else logOptimization(`${c.slide_id} · 跳过空候选回滚`,`本轮没有任何可执行参数，当前实测版本未被修改；再给一轮整页尝试，如果仍无可执行变化就自动停止。`);
     }
-    else if(round>0&&(score<=best.score||localRegressions.length)&&!validatingRollback){const tries=(run.noImprove[c.slide_id]||0)+1;run.noImprove[c.slide_id]=tries;
+    else if(round>0&&(score<=best.score||localRegressions.length)&&!validatingRollback){const tries=(run.noImprove[c.slide_id]||0)+1;run.noImprove[c.slide_id]=tries;if(tries>=2)run.stopped[c.slide_id]='连续两轮无对象级改善，停止AI样式诊断并保留最佳版';
      const detail=(state.calibrationDeck||[]).find(x=>x.slide_id===c.slide_id)?.result;
      const rejected=run.lastCandidates?.[c.slide_id]||[];rememberRejectedCalibration(run,c.slide_id,rejected)
      const regressionNote=localRegressions.length?`即使整页分数变化为 ${score-best.score>=0?'+':''}${score-best.score}，逐对象实测发现显著回归：${localRegressions.map(x=>`${x.id||x.type} ${x.type} +${x.increase.toFixed(3)}`).join('；')}。`:'';
@@ -335,18 +341,18 @@ async function exportDeck(mode='editable',supervise=false,round=0){if(round===0&
     }catch(e){logOptimization(`${c.slide_id} · 记忆写入失败`,e.message,'error')}
     const remainingActionable=differencesAfter.filter(d=>deepSeekCalibratableTypes.has(d.type));
     if(learningEntry?.autoApplied&&run.noCandidateStreak)run.noCandidateStreak[c.slide_id]=0;
-    if(!shouldContinueCalibration(score,differencesAfter)){run.stopped[c.slide_id]='已达90分且无剩余可校准差异';run.noImprove[c.slide_id]=0;logOptimization(`${c.slide_id} · 达标`,`${score}/100，且没有剩余可由现有文字对象修复的实测差异，停止继续修改`)}
+    if(!shouldContinueCalibration(score,differencesAfter)){run.stopped[c.slide_id]='无剩余可执行样式差异';run.noImprove[c.slide_id]=0;logOptimization(`${c.slide_id} · 达标`,`${score}/100，且没有剩余可由现有文字对象修复的实测差异，停止继续修改`)}
     else if(!run.stopped[c.slide_id]){eligible.push(c.slide_id);if(score>=90)logOptimization(`${c.slide_id} · 局部差异继续校准`,`${score}/100 已达分数线，但仍有 ${remainingActionable.length} 项实测差异，将继续整页联合校准`)}
    }
-   if(rollback){await loadKeep(state.sid);if(!eligible.length){run.running=false;$('aiCalibrate').textContent='启动整页自动优化';renderQAImages();$('aiQAResult').textContent=`自动校准已结束：${Object.entries(run.stopped).map(([id,msg])=>`${id} ${msg}`).join('；')||'所有未达标页均已单独暂停'}。最佳版已恢复并保留。`;logOptimization('优化结束',$('aiQAResult').textContent);return report}return exportDeck(mode,true,round+1)}
-   if(!eligible.length){run.running=false;$('aiCalibrate').textContent='启动整页自动优化';renderQAImages();const paused=Object.keys(run.disabled||{}).filter(id=>run.disabled[id]);$('aiQAResult').textContent=`自动校准已结束：${Object.entries(run.stopped).map(([id,msg])=>`${id} ${msg}`).join('；')||'所有未达标页均已单独暂停'}${paused.length?`；已暂停 ${paused.join('、')}`:''}。`;logOptimization('优化结束',$('aiQAResult').textContent);return report}
-   if(round>=25){run.running=false;for(const id of eligible)run.stopped[id]=`达到25轮上限，最佳实测${run.best[id]?.score??'未知'}/100，未达90分`;$('aiCalibrate').textContent='启动整页自动优化';$('aiQAResult').textContent=`自动优化达到25轮上限：${eligible.map(id=>`${id} 最佳${run.best[id]?.score??'未知'}/100，目标90分`).join('；')}。保留最佳版本，可检查逐项差异或重新启动。`;logOptimization('达到最大轮次',$('aiQAResult').textContent,'error');return report}
+   if(rollback){await loadKeep(state.sid);if(!eligible.length){run.running=false;$('aiCalibrate').textContent='启动样式诊断';renderQAImages();$('aiQAResult').textContent=`自动校准已结束：${Object.entries(run.stopped).map(([id,msg])=>`${id} ${msg}`).join('；')||'所有未达标页均已单独暂停'}。最佳版已恢复并保留。`;logOptimization('优化结束',$('aiQAResult').textContent);return report}return exportDeck(mode,true,round+1)}
+   if(!eligible.length){run.running=false;$('aiCalibrate').textContent='启动样式诊断';renderQAImages();const paused=Object.keys(run.disabled||{}).filter(id=>run.disabled[id]);$('aiQAResult').textContent=`自动校准已结束：${Object.entries(run.stopped).map(([id,msg])=>`${id} ${msg}`).join('；')||'所有未达标页均已单独暂停'}${paused.length?`；已暂停 ${paused.join('、')}`:''}。`;logOptimization('优化结束',$('aiQAResult').textContent);return report}
+   if(round>=3){run.running=false;for(const id of eligible)run.stopped[id]=`达到3轮样式诊断预算，最佳实测${run.best[id]?.score??'未知'}/100，仍有待复核差异`;$('aiCalibrate').textContent='启动样式诊断';$('aiQAResult').textContent=`自动优化达到3轮样式诊断预算：${eligible.map(id=>`${id} 最佳${run.best[id]?.score??'未知'}/100，保留逐对象检查结果`).join('；')}。保留最佳版本，可检查逐项差异或重新启动。`;logOptimization('达到最大轮次',$('aiQAResult').textContent,'error');return report}
    run.rounds=round+1;$('aiQAResult').textContent=`第${round+1}轮实测完成；DeepSeek 正在为 ${eligible.join('、')} 分析可编辑文字框，并提出格式/位置候选…`;
    logOptimization(`第${round+1}轮 · DeepSeek校准`,`${eligible.join('、')}：整体检查全页差异，可联合修复多个关联文字对象；模型自评分仅作诊断`);
-   const adjusted=await aiCalibrateDeck(eligible);if(state.optimizationRun?.cancelRequested){const active=state.optimizationRun;active.running=false;$('aiCalibrate').textContent='启动整页自动优化';$('aiQAResult').textContent='已停止优化；没有再启动下一轮。';logOptimization('用户停止优化',$('aiQAResult').textContent);return state.lastReport}if(state.optimizationRun?.fatalError){renderQAImages();return report}if(adjusted){logOptimization(`第${round+1}轮 · 候选已应用`,'候选已写入PPT对象，下一步马上真实渲染；只有实测提升才保留');return exportDeck(mode,true,round+1)}
-   logOptimization(`第${round+1}轮 · 无可执行候选`,'未达到90分，继续尝试其他校准策略');return exportDeck(mode,true,round+1)
+   const adjusted=await aiCalibrateDeck(eligible);if(state.optimizationRun?.cancelRequested){const active=state.optimizationRun;active.running=false;$('aiCalibrate').textContent='启动样式诊断';$('aiQAResult').textContent='已停止优化；没有再启动下一轮。';logOptimization('用户停止优化',$('aiQAResult').textContent);return state.lastReport}if(state.optimizationRun?.fatalError){renderQAImages();return report}if(adjusted){logOptimization(`第${round+1}轮 · 候选已应用`,'候选已写入PPT对象，下一步马上真实渲染；只有实测提升才保留');return exportDeck(mode,true,round+1)}
+   logOptimization(`第${round+1}轮 · 无可执行候选`,'无有效样式候选，停止调用并保留当前版本');run.running=false;$('aiCalibrate').textContent='启动样式诊断';return report
   }
-  catch(e){if(state.optimizationRun){state.optimizationRun.running=false;$('aiCalibrate').textContent='启动整页自动优化'}$('aiQAResult').textContent='PPTX 已导出，但自动逐页监督遇到技术阻塞并暂停：'+e.message+'。未达90分的页面不会标记完成；修复阻塞后可继续。'}
+  catch(e){if(state.optimizationRun){state.optimizationRun.running=false;$('aiCalibrate').textContent='启动样式诊断'}$('aiQAResult').textContent='PPTX 已导出，但自动逐页监督遇到技术阻塞并暂停：'+e.message+'。仍有待复核差异的页面不会标记完成；修复阻塞后可继续。'}
  }
  return report;}
 function pretty(o){return json(o)}
@@ -369,13 +375,14 @@ function differencePriority(d,elements=[]){
  const severity=Math.max(.75,Math.min(1.35,.75+differenceDistance(d)*.35));
  return base*areaWeight*severity;
 }
-const deepSeekCalibratableTypes=new Set(['text_overlap','glyph_size','text_weight','text_color','position_or_size']);
+const deepSeekCalibratableTypes=new Set(['glyph_size','text_weight','text_color']);
 function isDeepSeekBillingFailure(error){return /HTTP\s*402|insufficient\s+balance|insufficient_balance|余额不足/i.test(String(error?.message||error||''))}
-function shouldContinueCalibration(score,differences){return Number(score)>=90&&(differences||[]).some(d=>deepSeekCalibratableTypes.has(d.type))||Number(score)<90}
+function shouldContinueCalibration(score,differences){return (differences||[]).some(d=>deepSeekCalibratableTypes.has(d.type))}
 function validatePageWideCalibrationCandidate(result,scopeDiffs=[],elements=[]){
- const allowedStyle=new Set(['size','font','eastAsianFont','color','bold','italic','align','char_spacing_pt','line_spacing','vertical_align','margin_left_pt','margin_right_pt','margin_top_pt','margin_bottom_pt','paragraph_space_before_pt','paragraph_space_after_pt']);
+ const allowedStyle=new Set(['size','font','eastAsianFont','color','bold','italic']);
  let stripped=0;
  for(const c of result.corrections||[]){
+  if(c.box){delete c.box;stripped++}
   const style=c.style||{};
   for(const key of Object.keys(style))if(!allowedStyle.has(key)){delete style[key];stripped++}
   c.style=style;
@@ -443,7 +450,49 @@ async function layoutCurrentElements(){
  toast(`已生成统一布局候选，${response.layout.warnings.length} 个对象有提示；检查后保存布局`);
  return response;
 }
+function hasCandidateConflict(r){return !!r.ocr_conflicts?.length||(r.text_layout?.layout_warning||[]).some(w=>w.startsWith('layout_conflict:'))}
+function candidateStatusLabel(r){
+ if((r.text_layout?.layout_warning||[]).some(w=>w.startsWith('layout_conflict:')))return '布局异常 · 点击调整';
+ if(r.ocr_conflicts?.length)return '识别冲突 · 点击核对';
+ if(r.duplicate_of_existing)return '重复候选 · 未选中';
+ if(r.role==='ignore')return '已忽略';
+ return '未选中';
+}
+function agentCandidateMarkup(regions){
+ return regions.filter(r=>String(r.text||'').trim()&&((r.editable&&r.role!=='ignore')||hasCandidateConflict(r))).map(r=>{
+  const [x,y,w,h]=r.box,st=r.style||{},estimate=Math.round(h*720*(r.role==='title'?.78:.70));
+  const size=Math.max(6,Number(st.size)||Math.max(9,Math.min(54,estimate)));
+  const latin=browserFontFamily(r,st.font||state.project.design.font),east=browserFontFamily(r,st.eastAsianFont||'Noto Sans SC'),fontStack=fontStackForRegion(r.text_class,latin,east);
+  return `<div class="auto-preview-text ${r.editable&&r.role!=='ignore'?'':'pending-candidate'}" data-review-region="${esc(r.id)}" role="button" tabindex="0" title="${esc(r.editable?'点击调整文字':candidateStatusLabel(r))}" style="left:${x*100}%;top:${y*100}%;width:${w*100}%;height:${h*100}%;font-size:${size/9.6}cqw;color:${csshex(st.color||state.project.design.ink)};font-family:${esc(fontStack)};font-weight:${st.bold?'700':'400'}">${esc(String(r.text||''))}${r.editable&&r.role!=='ignore'?'':`<span class="candidate-status">${esc(candidateStatusLabel(r))}</span>`}</div>`
+ }).join('');
+}
+function bindAgentCandidatePreview(out){
+ out.querySelectorAll('[data-review-region]').forEach(node=>{
+  const open=()=>run(async()=>{await openManualDrawer();focusManualRegion(state.labRegions.findIndex(r=>r.id===node.dataset.reviewRegion))});
+  node.onclick=open;node.onkeydown=event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();open()}};
+ });
+}
+async function restoreAgentCandidatePreview(){
+ if(!state.project||state.autoCandidateSid||$('autoRebuildPage').disabled)return;
+ const id=pid(),sid=state.sid,out=$('autoRebuildResult');if(out.querySelector('.auto-preview-stage'))return;
+ const result=await api(`/api/projects/${id}/slides/${sid}/reconstruction`);
+ if(id!==state.project?.id||sid!==state.sid||state.autoCandidateSid||$('autoRebuildPage').disabled)return;
+ if(!result.ocr?.source_valid||!result.ocr.regions?.length)return;
+ state.labRegions=result.ocr.regions;labRenderRegions();
+ out.innerHTML=`<p>已恢复本页识别候选：包括未选中及越界文字。异常候选仍显示；悬停查看状态，点击文字打开右侧编辑。</p><div class="auto-preview-stage"><img alt="候选文字预览" src="${murl(slide().images.clean||slide().images.design)}">${agentCandidateMarkup(state.labRegions)}</div>`;
+ bindAgentCandidatePreview(out);
+}
 async function autoRebuildSlide(){
+ const button=$('autoRebuildPage');if(button.disabled)return;button.disabled=true;
+ try{return await autoRebuildSlideWork()}
+ catch(error){
+  state.autoCandidateSid=null;state.autoCandidateKind=null;$('confirmAutoRebuild').disabled=true;
+  run(()=>openManualDrawer(error.message||String(error)));
+  const out=$('autoRebuildResult');out.textContent=`本页 Agent 未完成：${error.message||String(error)}。已保存的页面未被替换；请检查待复核区域后重试。`;
+  throw error;
+ }finally{button.disabled=false}
+}
+async function autoRebuildSlideWork(){
  const sid=state.sid,s=slide();if(!s?.images.design)throw Error('先上传本页完整设计稿');if(!cleanPairCurrent(s))throw Error('先为本页上传与当前 design 配对的 clean 无字底图');
  const out=$('autoRebuildResult'),confirmButton=$('confirmAutoRebuild');confirmButton.disabled=true;state.autoCandidateSid=null;state.autoCandidateKind=null;
  out.textContent='Agent 1/4：DeepSeek 检查 design 与 clean 配对…';
@@ -500,10 +549,15 @@ async function autoRebuildSlide(){
    if(region.confidence>=.88&&!region.review_required)region.editable=true;
   }
  }
- regions=await reflowOCRTextBoxes(regions,sid);state.labRegions=regions;labRenderRegions();await put(`/api/projects/${pid()}/slides/${sid}/regions`,{regions});
+ regions=await reflowOCRTextBoxes(regions,sid);
+ for(const r of regions){
+  const conflicts=(r.text_layout?.layout_warning||[]).filter(x=>x.startsWith('layout_conflict:'));
+  if(conflicts.length){r.editable=false;r.review_required=true;r.layout_review_reason=`布局冲突（${conflicts.join('；')}），请核对字体、字号和页面边界`}
+ }
+ state.labRegions=regions;labRenderRegions();await put(`/api/projects/${pid()}/slides/${sid}/regions`,{regions});
  let selected=regions.filter(r=>r.editable&&r.role!=='ignore');
- for(const r of regions)r.review_reason=r.review_required?`同一区域OCR冲突：${(r.ocr_conflicts||[]).map(x=>x.text).join(' / ')}，请核对原稿`:r.duplicate_of_existing?'与现有对象重复':r.role==='ignore'?'语义标记为忽略':!r.editable?'置信度不足，待人工确认':null;
- if(!selected.length&&!cleanup.length){state.autoCandidateSid=null;out.textContent=`OCR 已识别 ${regions.length} 个区域，但没有达到自动提升置信度阈值的文字。为避免错字被写入，请在「更多工具 → OCR与背景修复」校正并勾选区域后再继续。${vision?` DeepSeek 识别了 ${structure.length} 个文字对象。`: ' DeepSeek 结构分析暂不可用。'}`;assignTab('lab');return}
+ for(const r of regions)r.review_reason=r.layout_review_reason?r.layout_review_reason:r.review_required?`同一区域OCR冲突：${(r.ocr_conflicts||[]).map(x=>x.text).join(' / ')}，请核对原稿`:r.duplicate_of_existing?'与现有对象重复':r.role==='ignore'?'语义标记为忽略':!r.editable?'置信度不足，待人工确认':null;
+ if(!selected.length&&!cleanup.length){state.autoCandidateSid=null;out.textContent=`OCR 已识别 ${regions.length} 个区域，但没有达到自动提升置信度阈值的文字。为避免错字被写入，请在右侧「手动调整」校正并勾选区域后再继续。${vision?` DeepSeek 识别了 ${structure.length} 个文字对象。`: ' DeepSeek 结构分析暂不可用。'}`;assignTab('lab');return}
  let previewUrl=murl(s.images.clean),repairReport=null;
  if(cleanup.length){
   out.textContent='Agent 3/4：clean 有少量残字，正在基于已上传 clean 局部修复（不会从 design 重绘整张）…';
@@ -514,22 +568,18 @@ async function autoRebuildSlide(){
  state.autoCandidateSid=sid;
  const warning=verifiedCleanFallback?'AI对底图的视觉判定未通过；但文件来源哈希匹配，保留clean不改动并继续按OCR拆分文字':vision?`DeepSeek 结构分析 ${structure.length} 个对象候选`:'DeepSeek 结构分析暂不可用，使用 OCR 结果继续';
  const low=regions.length-selected.length;
- const previewText=selected.map(r=>{
-  const [x,y,w,h]=r.box,st=r.style||{},estimate=Math.round(h*720*(r.role==='title'?.78:.70));
-  const size=Math.max(6,Number(st.size)||Math.max(9,Math.min(54,estimate)));
-  const latin=browserFontFamily(r,st.font||state.project.design.font),east=browserFontFamily(r,st.eastAsianFont||'Noto Sans SC'),fontStack=fontStackForRegion(r.text_class,latin,east);
-  return `<div class="auto-preview-text" style="left:${x*100}%;top:${y*100}%;width:${w*100}%;height:${h*100}%;font-size:${size/9.6}cqw;color:${csshex(st.color||state.project.design.ink)};font-family:${esc(fontStack)};font-weight:${st.bold?'700':'400'}">${esc(String(r.text||''))}</div>`
- }).join('');
+ const previewText=agentCandidateMarkup(regions);
  out.innerHTML=`<p><b>Agent 处理完成 · ${sid}</b></p><p>配对 ${pair.score}/100 · OCR识别 ${ocr.regions?.length||0} 个区域 → 按换行及中英/数字/公式类型拆为 ${regions.length} 个独立文本框 · 统一后端测宽与基线 · 自动提升 ${selected.length} 个 · 待人工复核 ${low} 个 · ${esc(warning)}</p>${repairReport?`<p>clean 局部修复候选：${repairReport.method} · 遮罩 ${repairReport.mask_percent}% 。`:'<p>沿用已上传且通过配对检查的 clean；没有从 design 重新生成或擦除整页。</p>'}<div class="auto-preview-stage"><img alt="配对无字底图与待提升文字的叠加预览" src="${previewUrl}">${previewText}</div>${regions.some(r=>!r.editable)?`<details><summary>待复核文字清单（${regions.filter(r=>!r.editable).length}）</summary>${regions.filter(r=>!r.editable).map(r=>`<p>${esc(r.id)} · ${esc(r.text)} · ${esc(r.review_reason||'待确认')}</p>`).join('')}</details>`:''}<p class="hint">每个视觉行单独成框；一行中的中文、英文/数字和公式也分别成框，按阅读顺序相邻摆放。同级列表行会对齐首字并统一样式。字色优先取原稿与配对无字底图的像素差；对比度不足时先用黑/白中更清晰的颜色，DeepSeek 后续可按原稿微调。检查叠加预览后确认；确认仅保存文字对象。</p>`;
- confirmButton.disabled=false;confirmButton.textContent=cleanup.length?`确认修复并进入第三步 · ${selected.length} 框`:`确认保存并进入第三步 · ${selected.length} 框`;
+ bindAgentCandidatePreview(out);
+ confirmButton.disabled=false;confirmButton.textContent=`确认保存本页 · ${selected.length} 框`;
  if(vision?.objects?.length)state.sceneProposal=vision;
 }
 async function confirmAutoRebuild(automatic=false){
  const sid=state.sid;if(state.autoCandidateSid!==sid)throw Error('本页还没有新的 Agent 候选，请先运行自动处理');
  let regions=await reflowOCRTextBoxes(labReadRows(),sid);state.labRegions=regions;labRenderRegions();
- const promoted=regions.filter(r=>r.editable&&r.role!=='ignore');if(!promoted.length&&state.autoCandidateKind!=='repair')throw Error('没有勾选可编辑文字框');
+ const promoted=regions.filter(r=>r.editable&&r.role!=='ignore');const conflicts=promoted.filter(r=>(r.text_layout?.layout_warning||[]).some(w=>w.startsWith('layout_conflict:')));if(conflicts.length){await openManualDrawer(`请先调整 ${conflicts.length} 个布局冲突：${conflicts.map(r=>r.text.slice(0,30)).join('；')}`);throw Error('部分文字框仍有布局冲突，请在右侧手动调整后保存')}if(!promoted.length&&state.autoCandidateKind!=='repair')throw Error('没有勾选可编辑文字框');
  await put(`/api/projects/${pid()}/slides/${sid}/regions`,{regions});
- if(!automatic&&!confirm(`确认采用 ${sid} 的去字候选，并将 ${promoted.length} 个文字区域提升为PPT原生文本框？`))return;
+ if(!automatic&&!confirm(`确认保存 ${sid} 的 ${promoted.length} 个原生文字框？保存后继续留在第二步，不影响其他页面。`))return;
  const clean=state.autoCandidateKind==='repair'?await post(`/api/projects/${pid()}/slides/${sid}/accept-clean`):null;
  const s=slide(),els=JSON.parse(JSON.stringify(s.elements||[])).filter(e=>!String(e.id).startsWith('ocr_')&&!['title','body'].includes(e.id));
  for(const r of promoted){
@@ -562,7 +612,7 @@ async function continueRebuildToThirdStage(sid,savedSummary){
    $('autoRebuildResult').textContent=savedSummary+`第三步已运行。${$('aiQAResult').textContent||'最新 PPTX 已真实渲染并启动整页 DeepSeek 校准。'} 可在「真实 PPTX 输出报告」和逐页预览中查看结果。`;
   }else{
    await exportDeck('editable',false);
-   $('autoRebuildResult').textContent=savedSummary+'第三步已完成真实 PPTX 渲染；自动校准开关处于关闭状态。若要让 DeepSeek 精细调整，请开启“导出后视觉检查”和“自动应用候选”，再启动整页自动优化。';
+   $('autoRebuildResult').textContent=savedSummary+'第三步已完成真实 PPTX 渲染；自动校准开关处于关闭状态。若要让 DeepSeek 精细调整，请开启“导出后视觉检查”和“自动应用候选”，再启动样式诊断。';
   }
   button.textContent='整套已进入第三步';state.autoStageRetry=null;
  }catch(e){
@@ -591,6 +641,109 @@ async function analyzeVisual(){const r=await post(`/api/projects/${pid()}/slides
  renderProposal('aiVisualProposal',`<h3>AI 布局识别建议</h3><p>${esc(r.notice)}</p><pre class="output">${esc(pretty(r.elements))}</pre><button class="btn primary" id="applyVisual">应用标题和正文框坐标</button>`);
  $('applyVisual').onclick=()=>{state.elements=state.elements.filter(e=>!['title','body'].includes(e.id)).concat(r.elements);state.selected='title';renderEditor();toast('已应用到预览，记得保存布局')};}
 async function aiVisualQA(){const r=await post(`/api/projects/${pid()}/slides/${state.sid}/visual-qa`,aiReq());$('aiQAResult').textContent=pretty(r);}
+let repairState=null,repairPoll=null,repairAutoPromise=null;
+const REPAIR_AUTO_KEY='visualPPTStudio.repairAutoRun';
+function repairScope(){return $('repairWholeDeck').checked?{}:{slides:[state.sid]}}
+function setRepairAutoMarker(projectId,token){try{sessionStorage.setItem(REPAIR_AUTO_KEY,JSON.stringify({project_id:projectId,token}))}catch{}}
+function clearRepairAutoMarker(projectId,token){try{const marker=JSON.parse(sessionStorage.getItem(REPAIR_AUTO_KEY)||'null');if(marker?.project_id===projectId&&(!token||marker.token===token))sessionStorage.removeItem(REPAIR_AUTO_KEY)}catch{}}
+function repairAutoMarker(){try{return JSON.parse(sessionStorage.getItem(REPAIR_AUTO_KEY)||'null')}catch{return null}}
+function renderRepairDiagnosis(d){
+ $('repairOverview').textContent=`检查来源版本 ${d.revision} · ${d.issue_count} 项问题线索 · AI调用 ${d.ai_calls||0}。接下来会自动完成候选验收；没有通过验证的修复不会写入项目。`;
+ $('repairIssues').innerHTML=d.pages.map(p=>`<details open class="repair-page"><summary>${esc(p.slide_id)} · ${p.issues.length} 项 · ${p.status==='structural_checks_pass'?'结构检查通过':'待处理'}</summary>${p.issues.map(i=>`<div class="repair-issue"><strong>${esc(i.issue_type)} · ${esc(i.text)}</strong>${i.line_id?`<p>行 ${esc(i.line_id)} · ${i.run_ids?.length||0} 个关联 run</p>`:''}<p>${esc(({create_native_text:'可定向补建原生文字',repair_line:'可生成整行几何修复候选',repair_source_style:'可生成原字体字重与定位候选'})[i.suggested_action]||'需要复核，不自动修改')} · 置信度 ${(i.confidence*100).toFixed(0)}%</p><details><summary>证据与匹配对象</summary><pre>${esc(json({source_region:i.source_region,matched_elements:i.matched_elements,evidence:i.evidence}))}</pre></details></div>`).join('')}</details>`).join('');
+}
+function renderRepairCandidate(r){
+ repairState=r;$('repairCandidate').classList.remove('hidden');
+ const base=`/api/projects/${r.project_id}/repair/${r.token}/files/`;
+ const noAction=r.status==='candidate_created'&&!r.actions.length;
+ const marker=repairAutoMarker(),legacyPending=r.status==='validated_pending_commit'&&!(marker?.project_id===r.project_id&&marker.token===r.token);
+ const noActionHint=noAction?`<div class="notice warning"><b>本次没有生成修复动作。</b>已检查 ${r.diagnosis?.issue_count||0} 项，DeepSeek 调用 ${r.ai_calls||0} 次，AI提出 ${r.diagnosis?.ai_proposal_count||0} 项。未通过内容、Clean底图和对象位置证据门槛的问题保留为待复核；请展开下方诊断查看原因。</div>`:'';
+ const candidateLabels={candidate_created:'已生成，尚未验收',validating:'浏览器验收中',validated_pending_commit:legacyPending?'上一轮候选已验收，尚未保存':'定向验收通过，正在自动保存',requires_review:'待人工复核',validation_failed:'验收失败',committed:'已提交',checked_current_project:'当前项目检查完成'};
+ const legacyHint=legacyPending?'<div class="notice warning"><b>这是旧版手动流程留下的候选，尚未写入项目。</b>为避免误提交旧结果，自动流程不会擅自保存它；点击上方按钮会按当前项目重新检查。</div>':'';
+ $('repairCandidate').innerHTML=`<strong>候选 ${esc(candidateLabels[r.status]||r.status)} · ${r.actions.length} 个定向动作 · DeepSeek ${r.ai_calls||0} 次</strong><p>${esc(r.phase||'候选已保存，尚未提交')}${r.error?' · '+esc(r.error):''}</p>${noActionHint}${legacyHint}<details><summary>诊断、AI建议、已执行动作与回滚记录</summary><pre>${esc(json({diagnosis:r.diagnosis,actions:r.actions.map(a=>({slide_id:a.slide_id,text:a.text,action:a.action,before:a.before_parameters,after:a.parameters})),rejected_actions:r.rejected_actions||[]}))}</pre></details><a href="${base}candidate.pptx" download>候选PPTX</a> · <a href="${base}original_project.json">原项目备份</a>${r.comparison&&r.status!=='validating'&&r.validation_complete!==false?`<p><a href="${base}diagnostic_summary.html" target="_blank">分类诊断及解决/回滚统计</a> · <a href="${base}before/validation/report.html" target="_blank">修复前浏览器报告</a> · <a href="${base}after/validation/report.html" target="_blank">修复后浏览器报告及逐对象对照</a> · <a href="${base}after/validation/export.pptx" download>浏览器验收PPTX</a></p>${(r.comparison.targeted||[]).map(t=>`<p><a href="${base}${esc(t.crop)}" target="_blank">原稿 / 修复前 / 修复后局部对照</a></p>`).join('')}<pre>${esc(json(r.comparison))}</pre>`:''}`;
+ const autoButton=$('repairAutoRun');if(autoButton)autoButton.disabled=r.status==='validating'||!!repairAutoPromise;renderQAImages();
+}
+async function restoreRepairCandidate(){
+ const id=pid();clearTimeout(repairPoll);repairState=null;$('repairCandidate').classList.add('hidden');if($('repairAutoRun'))$('repairAutoRun').disabled=!!repairAutoPromise;
+ renderQAImages();const r=await api(`/api/projects/${id}/repair/latest`);if(id!==pid())return;if(r){renderRepairDiagnosis(r.diagnosis);renderRepairCandidate(r);const marker=repairAutoMarker();if(marker?.project_id===id&&marker.token===r.token&&r.committed)clearRepairAutoMarker(id,r.token);else if(marker?.project_id===id&&marker.token===r.token&&!r.committed&&['candidate_created','validating','validated_pending_commit'].includes(r.status)){repairAutoPromise=resumeRepairAutoRun(id,r.token);try{await repairAutoPromise}finally{repairAutoPromise=null;if($('repairAutoRun'))$('repairAutoRun').disabled=false}}}
+}
+async function stageRepairCheck(){const id=pid(),d=await post(`/api/projects/${id}/repair/check`,repairScope());if(id===pid())renderRepairDiagnosis(d);return d}
+const REPAIR_TERMINAL=new Set(['validated_pending_commit','requires_review','validation_failed','committed','checked_current_project']);
+const waitRepairTick=()=>new Promise(resolve=>setTimeout(resolve,1500));
+async function pollRepairUntilTerminal(projectId,token){
+ let transientErrors=0;
+ for(;;){
+  let r;try{r=await api(`/api/projects/${projectId}/repair/${token}`);transientErrors=0}catch(e){if(++transientErrors>=3)throw Error(`读取自动验收状态连续失败：${e.message}`);await waitRepairTick();continue}
+  if(projectId===state.project?.id&&repairState?.token===token)renderRepairCandidate(r);
+  if(REPAIR_TERMINAL.has(r.status)&&r.validation_complete!==false)return r;
+  await waitRepairTick();
+ }
+}
+async function validateRepairAndWait(projectId,token){
+ const current=await api(`/api/projects/${projectId}/repair/${token}`);
+ let r=current;
+ if(current.status==='candidate_created'||current.status==='requires_review'&&!current.validation_complete){
+  if(projectId===state.project?.id)$('repairOverview').textContent='候选已隔离保存；正在浏览器实渲染并检查文字、几何和 PPTX 结构…';
+  r=await post(`/api/projects/${projectId}/repair/${token}/validate`);
+ }
+ if(projectId===state.project?.id)renderRepairCandidate(r);
+ if(REPAIR_TERMINAL.has(r.status)&&r.validation_complete!==false)return r;
+ return await pollRepairUntilTerminal(projectId,token);
+}
+async function finishRepairAutoRun(projectId,token){
+ let r=await validateRepairAndWait(projectId,token);
+ if(r.status==='validated_pending_commit'){
+  if(projectId!==pid())return r
+  $('repairOverview').textContent='浏览器局部对比和 PPTX 结构契约均通过；正在保存候选。系统会保留提交前备份。';
+  r=await post(`/api/projects/${projectId}/repair/${token}/commit`);
+  clearRepairAutoMarker(projectId,token);
+  if(projectId===pid())await loadKeep(state.sid);
+  if(projectId===state.project?.id)renderRepairCandidate(r);
+  if(projectId===state.project?.id)$('repairOverview').textContent=`自动修复已保存（项目版本 ${r.committed_revision??'已更新'}）。提交前备份和逐对象验收报告均已保留；请重新导出以生成最新版 PPTX。`;
+  if(projectId===pid())toast('已保存通过浏览器与 PPTX 验收的修复；原项目备份已保留');return r;
+ }
+ clearRepairAutoMarker(projectId,token);
+ const summary={requires_review:'验收完成，但仍有问题待复核；原项目未修改。请查看下方报告中的未通过项和回滚原因。',validation_failed:'自动验收失败；候选已隔离，原项目未修改。可查看验收报告和错误原因。',checked_current_project:'检查完成，没有需要修复的确定性问题；原项目未修改。',candidate_created:'没有可自动验收的安全修复动作；原项目未修改。'};
+ if(projectId===state.project?.id){$('repairOverview').textContent=summary[r.status]||`自动流程结束，状态：${r.status}。原项目未提交，请查看候选诊断。`;renderRepairCandidate(r)}
+ if(projectId===pid())toast(r.status==='requires_review'?'验收完成：部分问题需人工复核，项目未修改':'自动检查完成：原项目未修改');return r;
+}
+async function resumeRepairAutoRun(projectId,token){try{return await finishRepairAutoRun(projectId,token)}catch(e){if(projectId===state.project?.id)$('repairOverview').textContent=`自动流程暂停：${e.message}。候选仍隔离保存，原项目未修改；可再次点击自动运行继续验收。`;throw e}}
+async function stageRepairAutoRun(){
+ if(repairAutoPromise)return repairAutoPromise;
+ const id=pid();repairAutoPromise=(async()=>{
+  const button=$('repairAutoRun');button.disabled=true;
+  try{
+   $('repairIssues').innerHTML='';$('repairCandidate').classList.add('hidden');
+   const marker=repairAutoMarker();
+   if(marker?.project_id===id&&marker.token){
+    let pending=null;try{pending=await api(`/api/projects/${id}/repair/${marker.token}`)}catch{}
+    if(pending?.committed||pending?.status==='committed'){
+     clearRepairAutoMarker(id,marker.token);renderRepairCandidate(pending);
+     $('repairOverview').textContent=`上次自动修复已保存（项目版本 ${pending.committed_revision??'已更新'}），本次不重复运行。`;
+     return pending;
+    }
+    if(pending&&!pending.committed&&['candidate_created','validating','validated_pending_commit'].includes(pending.status)){
+     repairState=pending;renderRepairDiagnosis(pending.diagnosis);renderRepairCandidate(pending);
+     $('repairOverview').textContent='发现上次中断的候选；正在从已保存的验收状态继续，不会重复调用 DeepSeek…';
+     return await finishRepairAutoRun(id,marker.token);
+    }
+    clearRepairAutoMarker(id,marker.token);
+   }
+   $('repairOverview').textContent='第 1/3 步：检查原文、OCR、Clean 底图和现有文字对象；必要时按页调用一次 DeepSeek 查漏…';
+   const created=await post(`/api/projects/${id}/repair/smart-candidates`,{...aiReq(),...repairScope()});
+   if(created.token&&created.actions?.length)setRepairAutoMarker(id,created.token);
+   if(id!==pid())throw Error('当前项目已切换；候选仍保存在原项目中，没有自动提交。重新打开原项目后可继续。');
+   renderRepairDiagnosis(created.diagnosis);renderRepairCandidate(created);
+   if(!created.actions?.length){$('repairOverview').textContent=created.diagnosis?.issue_count?`检查完成：发现 ${created.diagnosis.issue_count} 项线索，但没有满足自动修复证据门槛的动作。原项目未修改；请查看待复核理由。`:'检查完成，没有发现需要自动修复的问题；原项目未修改。';return created}
+   if(!created.token)throw Error('服务端返回了修复动作，但缺少候选编号；为保护原项目，未继续提交。');
+   setRepairAutoMarker(id,created.token);
+   $('repairOverview').textContent=`第 2/3 步：已为 ${created.actions.length} 个动作创建隔离候选，正在用浏览器实渲染和 PPTX 契约验证…`;
+   return await finishRepairAutoRun(id,created.token);
+  }catch(e){if(id===pid())$('repairOverview').textContent=`自动流程未完成：${e.message}。如已生成候选，它仍与原项目隔离；未通过服务端验收的候选不会写入。`;throw e
+  }finally{repairAutoPromise=null;if(button.isConnected)button.disabled=false}
+ })();
+ return repairAutoPromise;
+}
+
 async function aiCalibrate(){const r=await post(`/api/projects/${pid()}/slides/${state.sid}/calibrate-text`,aiReq());showCalibration(r);return r;}
 function showCalibration(r){state.calibration=r;
  const body=`<h3>DeepSeek 校准候选 · 模型诊断 ${r.score}/100（非验收分）</h3><p>${esc(r.notice)}</p><pre class="output">${esc(pretty({issues:r.issues,corrections:r.corrections}))}</pre><button class="btn primary" id="applyCalibration" ${r.corrections.length?'':'disabled'}>在编辑器预览应用这些坐标/样式</button>`;
@@ -631,6 +784,7 @@ function compactCalibrationFeedback(previous,diffs,recent,learned,rejected,strat
   correction_rules:['每轮处理整页所有可修复差异，可同时返回多个对象的联合修改。','每个文字框只放一条视觉行；原稿有换行或一行放不下时必须由独立文本框承载下一行，禁止同框换行或自动折行。重建阶段负责逐行拆框，校准阶段遇到多行结构必须报告并要求重建。','同一项目符号列表的所有行必须对齐首字左边缘，并统一字体家族、字号、字重和颜色；不得保留OCR估算造成的横向缩进或字号抖动。','每次必须先逐项检查history中上一轮的previous_parameters、rendered_effect、实测前后分数和未解决差异；说明哪些参数有效并保留，哪些无效或造成回归并调整，不能脱离上一轮参数重新猜。','本轮每条correction.reason简要指出它回应的实测差异，以及相对上一轮对应对象参数具体保留或改变了什么；不得重复被实测否决的参数。','流程图上下叠放的文字不能只增大字号：必须同时放大文本框高度并依据字形框位置移动，保证上下行之间不重叠。','颜色只按给出的原稿/实渲染色值修正，不得改动没有颜色差异的对象。','对glyph_size_requirements中的对象，候选字号至少达到min_size，文本框高度至少达到min_box_height，并按box_center_delta校正框中心；真实渲染仍是最终验收。'],glyph_size_requirements:glyphSizeRequirements};
 }
 async function aiCalibrateDeck(eligibleIds=null){
+ const gate=await stageRepairCheck();const blockers=gate.pages.flatMap(p=>p.issues).filter(i=>['missing_native_object','duplicate_native_object','background_residual_risk','text_overflow','unexpected_line_break'].includes(i.issue_type));if(blockers.length){if(state.optimizationRun){state.optimizationRun.running=false;state.optimizationRun.fatalError=true}$('aiCalibrate').textContent='启动样式诊断';$('aiQAResult').textContent='已停止AI参数校准：请先生成并验收结构/几何修复候选。';return false;}
  const eligibleSet=eligibleIds?new Set(eligibleIds):null;
  const slides=state.project.slides.filter(s=>(!eligibleSet||eligibleSet.has(s.id))&&!state.optimizationRun?.disabled?.[s.id]&&cleanPairCurrent(s)&&s.elements.some(e=>['text','formula'].includes(e.kind)&&e.text?.trim()));
  const results=[];state.calibrationDeck=results;
@@ -657,10 +811,10 @@ async function aiCalibrateDeck(eligibleIds=null){
    const scopeIds=[...new Set([...differenceObjectIds(scopeEnriched),...(s.elements||[]).filter(e=>['text','formula'].includes(e.kind)&&e.text?.trim()).map(e=>e.id)])];
    if(run&&!scopeEnriched.length){const unsupported=measuredDiffs.filter(d=>!deepSeekCalibratableTypes.has(d.type));run.stopped[s.id]=unsupported.length?'剩余差异属于缺字/内容/公式等结构问题，超出现有对象参数校准范围':'当前没有可由现有文字对象修复的实测差异';run.pageStatus=run.pageStatus||{};run.pageStatus[s.id]=run.stopped[s.id];logOptimization(`${s.id} · 转结构重建`,`${run.stopped[s.id]}；本页不会继续消耗DeepSeek校准轮次`,'error');return {slide_id:s.id,paused:true}}
    if(run){run.scopeDiffs=run.scopeDiffs||{};run.scopeDiffs[s.id]=JSON.parse(JSON.stringify(scopeEnriched))}
-   for(let attempt=0;attempt<2;attempt++){
+   for(let attempt=0;attempt<1;attempt++){
     if(run?.disabled?.[s.id])return {slide_id:s.id,paused:true};
     const next=(run?.proposalAttempts?.[s.id]||0)+1;if(run)run.proposalAttempts[s.id]=next;
-    const strategies=['先整体修复全页遮挡、溢出和错误换行，并联合调整相关文本框','检查全页同级样式与字形大小/字重，成组提出必要修改','对照全部OCR差异与实渲染图，整体校准位置、字体、字号和颜色','重新检查全页A/C，兼顾字形与对象间距，提出协调候选'];
+    const strategies=['对照原稿与实渲染，仅检查字体、字号、颜色与字重；不修改坐标，不解决结构缺字'];
    const rejected=run?.rejectedCandidates?.[s.id]||[];
     feedback=compactCalibrationFeedback(feedback,measuredDiffs,recent,learned,rejected,strategies[(next-1)%strategies.length],scopeEnriched,(s.elements||[]).filter(e=>['text','formula'].includes(e.kind)).map(e=>e.id),s.elements||[]);
     const payload={...aiReq(),optimization_feedback:feedback,optimization_round:next};
@@ -672,7 +826,7 @@ async function aiCalibrateDeck(eligibleIds=null){
     const strippedProperties=validatePageWideCalibrationCandidate(result,scopeEnriched,s.elements||[]);
     if(strippedProperties)feedback={...(typeof feedback==='object'&&feedback?feedback:{}),previous_feedback:[feedback?.previous_feedback||'',`全页候选校验移除了${strippedProperties}项超出属性白名单或方向错误的参数；允许同时修复全页差异对象 ${JSON.stringify(scopeIds)}。坐标是归一化值，y增大代表向下、y减小代表向上。请基于图A/C的整页证据补全关联对象候选。`].filter(Boolean).join('\n')};
     const glyphRequirements=feedback?.glyph_size_requirements||[];
-    if(glyphRequirements.length)enforceGlyphSizeRequirements(result,glyphRequirements,s.elements||[]);
+    // Geometry and inferred size overrides belong to the layout engine, never to model advice.
     const rejectedNow=(result.corrections||[]).filter(c=>calibrationCandidateWasRejected(c,run?.rejectedCandidates?.[s.id]||[]));
     if(rejectedNow.length){
      rememberRejectedCalibration(run,s.id,rejectedNow);
@@ -681,7 +835,7 @@ async function aiCalibrateDeck(eligibleIds=null){
      logOptimization(`${s.id} · 拦截重复候选`,`DeepSeek 重复提出 ${rejectedNow.length} 个此前实测未提升的参数；已剔除并请求新的可执行方案`,'error');
     }
     hasChange=(result.corrections||[]).some(c=>{const e=s.elements.find(x=>x.id===c.id);return e&&JSON.stringify({box:e.box,style:e.style||{}})!==JSON.stringify({box:c.box||e.box,style:{...(e.style||{}),...(c.style||{})}})});
-    if(hasChange||attempt===1)break;
+    if(hasChange||attempt===0)break;
     if(result.corrections?.length)rememberRejectedCalibration(run,s.id,result.corrections)
     feedback={...(typeof feedback==='object'&&feedback?feedback:{}),previous_feedback:[feedback?.previous_feedback||'',`上次返回的候选无法改变任何PPT参数，原因可能是空 corrections 或参数与当前值相同。不要重复原答案。请重新对照C图实际渲染，尤其核查显式布局风险 ${JSON.stringify(result.layout_issues||[])}、同级样式组 ${JSON.stringify(result.peer_style_groups||[])}，对可见溢出/遮挡给出至少一个安全、不同且可执行的最小参数改动。若确实无可靠方案，issues中明确写出原因。`].filter(Boolean).join('\n')};
     logOptimization(`${s.id} · 候选无变化`,`DeepSeek 返回的候选没有改变PPT参数，正在带着具体风险再请求一次`,'error');
@@ -705,7 +859,7 @@ async function aiCalibrateDeck(eligibleIds=null){
   const run=state.optimizationRun;
   const billing=!!requestFailure.fatal;
   if(run){run.running=false;run.fatalError=billing?'DeepSeek API 余额不足（HTTP 402）；自动优化已停止。充值后再重新启动即可。':`DeepSeek 请求失败；自动优化已停止：${requestFailure.error}`}
-  $('aiCalibrate').textContent='启动整页自动优化';
+  $('aiCalibrate').textContent='启动样式诊断';
   $('aiQAResult').textContent=billing?'DeepSeek API 返回 402：账户余额不足。本轮候选未应用，自动优化已立即停止，不会继续空转重试。请补充 API 余额后重新启动。':`DeepSeek 请求失败：${requestFailure.error}。本轮候选未应用，自动优化已停止，不会重复发起下一轮。`;
   logOptimization(billing?'DeepSeek余额不足 · 已停止':'DeepSeek请求失败 · 已停止',`${requestFailure.slide_id}：${requestFailure.error}。本轮没有应用候选，也没有发起下一轮。`,'error');
   renderQAImages();return false;
@@ -737,6 +891,68 @@ async function aiCalibrateDeck(eligibleIds=null){
 }
 function renderCalibrationDeck(){renderOptimizationLog()}
 
+let manualContext=null;
+function initManualDrawer(){
+ const lab=$('tab-lab');lab.classList.remove('page');$('manualDrawerBody').append(lab);
+ const panels=[...lab.querySelectorAll(':scope > .panel')];
+ for(const [i,panel] of panels.entries())if(i!==2){const details=document.createElement('details');details.className='advanced-panel';const summary=document.createElement('summary');summary.textContent=i===1?'原稿定位与重新识别（可选）':'高级工具（可选）';panel.before(details);details.append(summary,panel)}
+ $('labSaveRegions').textContent='保存调整草稿';$('labRefresh').textContent='重新读取';
+ $('openManualRebuild').onclick=()=>run(()=>openManualDrawer());$('closeManualDrawer').onclick=()=>{$('manualDrawer').close();manualContext=null};
+ $('manualPreview').onclick=()=>run(manualPreview);$('manualDrawer').addEventListener('cancel',()=>{manualContext=null});
+}
+async function openManualDrawer(message=''){
+ pid();if(state.projectLoading)throw Error('页面正在加载，请稍后打开');
+ const context={pid:pid(),sid:state.sid};manualContext=context;$('manualDrawerContext').textContent=context.sid+' · '+slide().title;
+ $('manualDrawerMessage').textContent=message||'修改后点击「更新预览」，确认无误再保存本页。未勾选的文字不会被提升。';
+ if(!$('manualDrawer').open)$('manualDrawer').showModal();
+ $('labOriginal').src=murl(slide().images.design);$('labSlideBadge').textContent=state.sid;
+ if(!state.labRegions.length){
+  await labRefresh();
+  if(manualContext!==context)return;
+  if(!state.labRegions.length)state.labRegions=(slide().elements||[]).filter(e=>['text','formula'].includes(e.kind)).map(e=>({...JSON.parse(JSON.stringify(e)),editable:true,role:'custom'}));
+ }
+ labRenderRegions();await renderManualPreview();
+}
+function assertManualContext(){if(!manualContext||manualContext.pid!==pid()||manualContext.sid!==state.sid)throw Error('手动调整所属页面已改变，请关闭并重新打开')}
+function focusManualRegion(index){
+ if(index<0)return;ocrPage=Math.floor(index/ocrPageSize);$('ocrSearch').value='';filterOCR();
+ const row=$('labRegions').querySelector(`[data-labrow="${index}"]`);row?.scrollIntoView({block:'nearest'});row?.querySelector('.lab-txt').focus();
+}
+async function renderManualPreview(){
+ const stage=$('manualPreviewStage'),s=slide();stage.innerHTML=`<img src="${murl(s.images.clean||s.images.design)}" alt="当前页背景">`;
+ await ensureProjectFonts({id:pid(),slides:[{elements:state.labRegions}]});
+ for(const r of state.labRegions.filter(r=>String(r.text||'').trim())){
+  const st=r.style||{},b=r.box,n=document.createElement('div');n.className='manual-preview-text'+(r.editable&&r.role!=='ignore'?'':' pending-candidate');n.dataset.regionId=r.id;n.title='点击定位并编辑该文字框';
+  Object.assign(n.style,{left:b[0]*100+'%',top:b[1]*100+'%',width:b[2]*100+'%',height:b[3]*100+'%',fontSize:Number(st.size)/9.6+'cqw',fontFamily:browserFontFamily(r,st.font||state.project.design.font),fontWeight:st.bold?'700':'400',color:csshex(st.color||state.project.design.ink)});
+  const line=document.createElement('span');line.textContent=r.text;const marker=document.createElement('span');marker.className='baseline-marker';line.append(marker);n.append(line);stage.append(n);
+  n.onclick=()=>focusManualRegion(state.labRegions.indexOf(r));
+  if(!r.editable||r.role==='ignore'){const badge=document.createElement('span');badge.className='candidate-status';badge.textContent=candidateStatusLabel(r);n.append(badge)}
+  if(r.text_layout?.baseline_pt!=null){const base=stage.getBoundingClientRect(),delta=r.text_layout.baseline_pt*base.width/960-(marker.getBoundingClientRect().top-base.top);line.style.display='inline-block';line.style.transform=`translateY(${delta}px)`}
+ }
+}
+async function manualPreview(){
+ assertManualContext();state.labRegions=await reflowOCRTextBoxes(labReadRows());assertManualContext();
+ for(const r of state.labRegions){if(!(r.text_layout?.layout_warning||[]).some(w=>w.startsWith('layout_conflict:'))){r.layout_review_reason=null;if(!r.ocr_conflicts?.length){r.review_required=false;r.review_reason=null}}}
+ labRenderRegions();await renderManualPreview();
+ const bad=state.labRegions.filter(r=>(r.text_layout?.layout_warning||[]).some(x=>x.startsWith('layout_conflict:')));
+ $('manualDrawerMessage').textContent=bad.length?`还有 ${bad.length} 个布局冲突：${bad.map(r=>r.text.slice(0,30)).join('；')}。请调整或取消勾选。`:'预览已更新。确认后保存当前页，背景保持已上传的无字图。';
+}
+async function labApply(){
+ assertManualContext();await manualPreview();assertManualContext();
+ const regions=state.labRegions,rows=regions.filter(r=>r.editable&&r.role!=='ignore'&&r.text.trim());
+ if(!rows.length)throw Error('请至少勾选一个有效文字框');
+ const bad=rows.filter(r=>(r.text_layout?.layout_warning||[]).some(x=>x.startsWith('layout_conflict:')));
+ if(bad.length)throw Error(`请先修正或取消勾选 ${bad.length} 个冲突文字框：${bad.map(r=>r.text.slice(0,25)).join('；')}`);
+ const id=pid(),sid=state.sid,s=slide();if(!cleanPairCurrent(s))throw Error('请先上传当前页配对的无字背景图');
+ await put(`/api/projects/${id}/slides/${sid}/regions`,{regions});assertManualContext();
+ const preserved=(s.elements||[]).filter(e=>!['text','formula'].includes(e.kind));
+ const edited=rows.map(r=>{const e={...r,kind:r.kind||'text',role:'custom'};delete e.logical_id;if(['title','body'].includes(e.id))e.id='manual_'+e.id;return e});
+ await put(`/api/projects/${id}/slides/${sid}`,{elements:[...preserved,...edited],title:s.title,body:s.body});
+ await post(`/api/projects/${id}/slides/${sid}/confirm-reconstruction`);state.autoCandidateSid=null;state.autoCandidateKind=null;
+ $('manualDrawer').close();manualContext=null;await loadKeep(sid);await refreshReconstructionProgress();
+ $('autoRebuildResult').textContent=`${sid} 已通过手动调整保存 ${rows.length} 个文字框；沿用已上传背景。`;toast('已保存本页手动调整，可继续处理下一页');
+}
+
 // ----- v0.2 Reconstruction Lab -----
 const labEndpoint=()=>`/api/projects/${pid()}/slides/${state.sid}`;
 const labUrl=(name)=>`/lab/${pid()}/${state.sid}/${name}?rev=${Date.now()}`;
@@ -755,13 +971,13 @@ function labRenderRegions(){
   const regions=state.labRegions||[];
   $('labRegions').innerHTML=regions.length?regions.map((r,i)=>{
     const b=r.box||[.05,.1,.5,.08];
-    return `<div class="lab-region" data-labrow="${i}"><strong>${i+1}</strong><label title="勾选后才会去字并提升为PPT原生文字" class="lab-select"><input type="checkbox" class="lab-editable" ${r.editable?'checked':''}>提升</label>`+
+    return `<div class="lab-region" data-labrow="${i}"><strong>${i+1}</strong><label title="勾选后保存为独立可编辑文字框" class="lab-select"><input type="checkbox" class="lab-editable" ${r.editable?'checked':''}>提升</label>`+
        `<input aria-label="识别文字" class="lab-txt" value="${esc(r.text||'')}">`+
        `<select class="lab-role"><option value="custom" ${r.role==='custom'||!r.role?'selected':''}>普通文本</option><option value="title" ${r.role==='title'?'selected':''}>规划标题</option><option value="body" ${r.role==='body'?'selected':''}>规划正文</option><option value="ignore" ${r.role==='ignore'?'selected':''}>忽略</option></select>`+
        b.map((v,j)=>`<input class="lab-coordinate" data-col="${j}" aria-label="${['x','y','w','h'][j]}" type="number" step="0.001" value="${Number(v).toFixed(9)}">`).join('')+
-       `<button class="btn small danger lab-delete" title="移除">×</button></div>`;
+       `<button class="btn small danger lab-delete" title="移除">×</button><div class="lab-style-fields"><label>字号(pt)<input class="lab-size" type="number" min="6" max="96" step="0.1" value="${Number(r.style?.size)||18}"></label><label>字体<input class="lab-font" value="${esc(r.style?.font||state.project.design.font)}"></label><label>颜色<input class="lab-color" type="color" value="#${r.style?.color||state.project.design.ink}"></label><label><input class="lab-bold" type="checkbox" ${r.style?.bold?'checked':''}>加粗</label></div><div class="lab-warning">${esc(r.layout_review_reason||r.review_reason||(r.text_layout?.layout_warning||[]).join('；'))}</div></div>`;
   }).join(''):'<p class="hint">暂无文字区域。点击 OCR 或「添加文字区」。</p>';
-  $('labRegions').querySelectorAll('.lab-delete').forEach((btn)=>btn.onclick=()=>{labReadRows();const idx=Number(btn.parentElement.dataset.labrow);state.labRegions.splice(idx,1);labRenderRegions()});
+  $('labRegions').querySelectorAll('.lab-delete').forEach((btn)=>btn.onclick=()=>{labReadRows(false);const idx=Number(btn.parentElement.dataset.labrow);state.labRegions.splice(idx,1);labRenderRegions()});
   filterOCR();
   const boxes=$('labRects');
   boxes.innerHTML=regions.map((r,i)=>{
@@ -769,7 +985,7 @@ function labRenderRegions(){
      let b=r.box||[0,0,0,0];return `<div class="lab-detected" style="left:${b[0]*100}%;top:${b[1]*100}%;width:${b[2]*100}%;height:${b[3]*100}%">${i+1}</div>`;
   }).join('');
 }
-function labReadRows(){
+function labReadRows(validate=true){
   const prior=state.labRegions||[];
  const nodes=[...document.querySelectorAll('[data-labrow]')],manuallyMovedGroups=new Set();
  nodes.forEach((node,i)=>{const old=prior[i],box=[...node.querySelectorAll('[data-col]')].map(x=>Number(x.value));if(old?.source_group&&old.box?.length===4&&box.some((value,j)=>Math.abs(value-Number(old.box[j]))>=1e-6))manuallyMovedGroups.add(old.source_group)});
@@ -778,13 +994,14 @@ function labReadRows(){
     const sameBox=prior[i]?.box?.length===4&&box.every((value,j)=>Math.abs(value-Number(prior[i].box[j]))<1e-6);
     return {...(prior[i]||{}),id:prior[i]?.id||`text_${String(i+1).padStart(3,'0')}`,text,
       role:node.querySelector('.lab-role').value,editable:node.querySelector('.lab-editable').checked,box,
-      confidence:prior[i]?.confidence||0,style:prior[i]?.style||{},text_class:prior[i]?.text_class,
+      confidence:prior[i]?.confidence||0,style:{...(prior[i]?.style||{}),size:Number(node.querySelector('.lab-size').value),font:node.querySelector('.lab-font').value,color:node.querySelector('.lab-color').value.slice(1),bold:node.querySelector('.lab-bold').checked},text_class:prior[i]?.text_class,
       source_text:text===prior[i]?.text?prior[i]?.source_text:text,source_box:sameBox?prior[i]?.source_box:box,
       source_group:prior[i]?.source_group,layout_locks:manuallyMovedGroups.has(prior[i]?.source_group)?{...(prior[i]?.layout_locks||{}),x:true,y:true,w:true,h:true}:prior[i]?.layout_locks};
   });
-  for(const r of state.labRegions){
-    const b=r.box;if(b.some(x=>!Number.isFinite(x))||b[0]<0||b[1]<0||b[2]<=0||b[3]<=0||b[0]+b[2]>1.000001||b[1]+b[3]>1.000001)
-      throw new Error('文字区域必须是页面内的有效 [x,y,w,h] 归一化坐标');
+  if(validate)for(const r of state.labRegions){
+    if(!Number.isFinite(r.style.size)||r.style.size<6||r.style.size>96)throw Error(`文字框 ${r.id} 字号应在6–96pt之间`);
+    const b=r.box;if(b.some(x=>!Number.isFinite(x))||b.some(x=>Math.abs(x)>10)||b[2]<=0||b[3]<=0)
+      throw new Error(`文字框 ${r.id}（${r.text.slice(0,35)}）坐标无效：请填写有限的 X、Y 和大于0的宽高`);
   }
   return state.labRegions;
 }
@@ -853,10 +1070,11 @@ async function labApplyScene(){
   else{state.labRegions=regions;labRenderRegions();toast(`已加入 ${regions.length} 个文字候选；默认未勾选提升，请校对文字后选择需要可编辑的区域。`)}
 }
 async function labSave(){
+  if(manualContext)await manualPreview();
   const regions=labReadRows();const r=await put(labEndpoint()+'/regions',{regions});labRenderRegions();
   toast('已保存 '+r.regions.length+' 个区域；不会改动项目文案或正式底图');
 }
-async function labApply(){
+async function legacyLabApply(){
   const regions=await reflowOCRTextBoxes(labReadRows());state.labRegions=regions;labRenderRegions();
   const rows=regions.filter(r=>r.editable&&r.role!=='ignore');
   await put(labEndpoint()+'/regions',{regions});const s=slide();
@@ -935,8 +1153,10 @@ async function createDialogProject(){const f={title:$('newTitle').value.trim(),t
  if(!f.title||!f.topic)throw Error('请填写项目名称和主题简介');let p=await post('/api/projects',f);await loadProject(p.id);assignTab('plan');toast('已创建空白逐页规划；项目名称和主题简介不会自动变成页面文案')}
 function bindings(){
  $('newProject').onclick=()=>$('newDialog').showModal();
- $('newForm').addEventListener('submit',ev=>{if(ev.submitter?.value==='cancel')return;ev.preventDefault();run(async()=>{await createDialogProject();$('newDialog').close()})});
+ $('cancelNew').onclick=()=>$('newDialog').close();
+ $('newForm').addEventListener('submit',ev=>{ev.preventDefault();run(async()=>{await createDialogProject();$('newDialog').close()})});
  $('refreshProjects').onclick=()=>run(refreshProjects);
+ initManualDrawer();
  $('tabs').querySelectorAll('[data-tab]').forEach(el=>el.onclick=()=>assignTab(el.dataset.tab));
  $('ocrSearch').oninput=()=>{ocrPage=0;filterOCR()};$('ocrPrev').onclick=()=>{ocrPage=Math.max(0,ocrPage-1);filterOCR()};$('ocrNext').onclick=()=>{ocrPage++;filterOCR()};
  // Environment diagnostics moved to advanced tab.
@@ -960,7 +1180,8 @@ function bindings(){
  $('removeElement').onclick=()=>{state.elements=state.elements.filter(e=>e.id!==state.selected);state.selected=state.elements[0]?.id||null;renderEditor();toast('已从预览移除，记得保存布局')};
  $('editorModes').querySelectorAll('[data-mode]').forEach(x=>x.onclick=()=>{state.mode=x.dataset.mode;renderEditor()});
  $('makeClean').onclick=()=>run(async()=>{if(!state.masks.length)throw Error('先进入标注去字选区模式，在设计图上框选文字区域');const r=await post(`/api/projects/${pid()}/slides/${state.sid}/inpaint`,{rects:state.masks});state.labRegions=state.masks.map(b=>({box:b,text:'',role:'custom'}));assignTab('lab');$('labMaskImg').src=labUrl(r.mask);$('labCandidateImg').src=labUrl(r.candidate);$('labInspectionImg').src=labUrl(r.inspection);toast(r.warning);});
- $('analyzeVisual').onclick=()=>run(analyzeVisual);$('runQA').onclick=()=>run(runQA);$('importWPSRender').onclick=()=>run(importWPSRender);$('exportEditable').onclick=()=>run(()=>exportDeck('editable'));$('aiVisualQA').onclick=()=>run(aiVisualQA);$('aiCalibrate').onclick=()=>{const button=$('aiCalibrate');if(state.optimizationRun?.running){state.optimizationRun.cancelRequested=true;button.textContent='正在停止…';return}run(async()=>{if(!$('autoSupervise').checked||!$('autoApplyCalibration').checked)throw Error('请先开启“导出后自动视觉检查”和“自动应用候选”');try{await exportDeck('editable',true)}catch(e){if(state.optimizationRun){state.optimizationRun.running=false;button.textContent='启动整页自动优化'}throw e}})};
+ $('analyzeVisual').onclick=()=>run(analyzeVisual);$('repairAutoRun').onclick=()=>run(stageRepairAutoRun);
+ $('runQA').onclick=()=>run(runQA);$('importWPSRender').onclick=()=>run(importWPSRender);$('exportEditable').onclick=()=>run(()=>exportDeck('editable'));$('aiVisualQA').onclick=()=>run(aiVisualQA);$('aiCalibrate').onclick=()=>{const button=$('aiCalibrate');if(state.optimizationRun?.running){state.optimizationRun.cancelRequested=true;button.textContent='正在停止…';return}run(async()=>{if(!$('autoSupervise').checked||!$('autoApplyCalibration').checked)throw Error('请先开启“导出后自动视觉检查”和“自动应用候选”');try{await exportDeck('editable',true)}catch(e){if(state.optimizationRun){state.optimizationRun.running=false;button.textContent='启动样式诊断'}throw e}})};
  $('referenceOpacity').oninput=ev=>{const v=Number(ev.target.value);$('referenceValue').textContent=v+'%';$('refOverlay').style.opacity=state.mode==='editable'?String(v/100):'0'};
  $('testAPI').onclick=()=>run(async()=>{$('debugOutput').textContent=pretty(await post('/api/ai/test',aiReq()))});
  [['debugHealth','health'],['debugPlan','plan'],['debugImages','projects'],['debugQA','qa'],['debugJSON','json']].forEach(([id,name])=>$(id).onclick=()=>run(()=>debugSection(name)));
@@ -968,12 +1189,12 @@ function bindings(){
  $('exportBatch').onclick=()=>run(async()=>{const ids=[...document.querySelectorAll('.batch-check:checked')].map(x=>x.value);if(!ids.length)throw Error('请勾选项目');$('batchOutput').textContent='批量生成与合并中…';const r=await post('/api/batch/export',{project_ids:ids,mode:$('batchMode').value});$('batchOutput').textContent=pretty(r);if(r.url){const a=document.createElement('a');a.href=r.url;a.download='批量PPT导出.zip';a.textContent='下载批量导出 ZIP';a.className='btn primary';$('batchOutput').after(a)}toast('批量任务完成：成功 '+r.success.length+'，失败 '+r.errors.length);});
  $('autoRebuildPage').onclick=()=>run(autoRebuildSlide);$('confirmAutoRebuild').onclick=()=>run(()=>state.autoCandidateSid===state.sid?confirmAutoRebuild():Promise.reject(Error('当前页没有待确认的 Agent 候选，请先运行当前页 Agent')));$('finishReconstruction').onclick=()=>run(()=>state.autoStageRetry?state.autoStageRetry():finishReconstructionAndEnterThirdStage());
  [['labRasterFirst',labRasterFirst],['labRefresh',labRefresh],['labDetect',labDetect],['labAnalyzeStructure',labAnalyzeStructure],['labSaveRegions',labSave],['labApplyTexts',labApply],['labGenerate',labGenerate],['labAccept',labAccept],['labExtract',labExtract],['labCompare',labCompare]].forEach(([id,fn])=>$(id).onclick=()=>run(fn));
- $('labSelectNone').onclick=()=>run(async()=>{labReadRows();state.labRegions.forEach(r=>r.editable=false);labRenderRegions();toast('已全部取消提升，请按需逐项勾选')});
-  $('labAddRegion').onclick=()=>run(async()=>{labReadRows();state.labRegions.push({text:'',role:'custom',box:[.1,.1,.3,.055],confidence:0,editable:true});labRenderRegions()});
+ $('labSelectNone').onclick=()=>run(async()=>{labReadRows(false);state.labRegions.forEach(r=>r.editable=false);labRenderRegions();toast('已全部取消提升，请按需逐项勾选')});
+  $('labAddRegion').onclick=()=>run(async()=>{labReadRows(false);state.labRegions.push({text:'',role:'custom',box:[.1,.1,.3,.055],confidence:0,editable:true});labRenderRegions()});
  setupLabCrop();
  setupStage();
 }
-async function init(){bindings();await refreshProjects();if(state.projects.length)await loadProject(state.projects[0].id);else renderEverything()}
+async function init(){bindings();await refreshProjects();let remembered=null;try{remembered=sessionStorage.getItem('visualPPTStudio.qaProject')}catch{}const saved=state.projects.find(p=>p.id===remembered);if(state.projects.length)await loadProject(saved?.id||state.projects[0].id);else renderEverything();if(saved)assignTab('qa')}
 window.visualPPTStudioQA={snapshot:()=>JSON.parse(JSON.stringify({project:state.project,sid:state.sid,elements:state.elements,fontStatus:state.fontStatus,selected:state.selected,projectLoading:!!state.projectLoading,reconstructionPages:state.reconstructionPages,lastReport:state.lastReport})),fontsReady:()=>document.fonts.ready,alignBaselines:alignGlyphBaselines};
 window.addEventListener('resize',()=>requestAnimationFrame(alignGlyphBaselines));
 init().catch(e=>toast('初始化失败：'+e.message,true));

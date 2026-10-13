@@ -78,3 +78,28 @@ def test_more_than_old_148_objects_are_not_silently_dropped(tmp_path,monkeypatch
     result=core.update_slide(p,'S001',{'elements':els})
     assert len(result['elements'])==180
     assert len({e['run_id'] for e in result['elements']})==180
+
+
+def test_overflow_layout_candidate_is_saved_for_review_without_font_shrink(tmp_path,monkeypatch):
+    monkeypatch.setattr(core,'DATA',tmp_path)
+    p=core.create_project('Overflow','Review',1);p['locked']=True;core.save_project(p)
+    image=BytesIO();Image.new('RGB',(960,540),'white').save(image,'PNG')
+    core.write_image(p,'S001','design',image.getvalue(),'design.png')
+    from studio.text_layout import layout_elements
+    els,_=layout_elements([{'id':'long-title','kind':'text','text':'Very long title '*12,'source_text':'Very long title '*12,
+                            'box':[.04,.02,.9,.08],'source_box':[.04,.02,.9,.08],'layout_managed':True,'editable':True,'style':{'size':38}}],p['design'],'S001')
+    assert els[0]['box'][0]+els[0]['box'][2]>1
+    result=rc.persist_regions(p,'S001',els)
+    saved=result['regions'][0]
+    assert saved['box']==els[0]['box'] and saved['style']['size']==38
+    assert saved['review_required'] and saved['editable'] is False
+    assert '溢出' in saved['review_reason']
+
+
+def test_raw_crop_still_rejects_outside_region_with_object_id(tmp_path,monkeypatch):
+    monkeypatch.setattr(core,'DATA',tmp_path)
+    p=core.create_project('Invalid','Review',1);p['locked']=True;core.save_project(p)
+    image=BytesIO();Image.new('RGB',(960,540),'white').save(image,'PNG')
+    core.write_image(p,'S001','design',image.getvalue(),'design.png')
+    with pytest.raises(ValueError,match='bad-box'):
+        rc.persist_regions(p,'S001',[{'id':'bad-box','text':'Bad','box':[.9,.1,.2,.1]}])

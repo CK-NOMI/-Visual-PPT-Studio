@@ -25,6 +25,32 @@ def test_all_deepseek_calls_receive_shared_agent_contract():
     assert 'Task-specific JSON schema.' in messages[0]['content']
     assert messages[1]['content']==user_payload
 
+def test_stage03_smart_repair_calls_vision_once_and_builds_isolated_candidate(tmp_path,monkeypatch,client):
+    import asyncio
+    from studio import repair_pipeline as rp
+    design=tmp_path/'design.png';render=tmp_path/'render.png'
+    design.write_bytes(png());render.write_bytes(png())
+    project={'id':'smart','revision':3,'design':{'font':'Arial'},'slides':[{'id':'S001','title':'Missing title',
+        'body':'','images':{'design':'S001_design.png','clean':'S001_clean.png'},'elements':[]}]}
+    monkeypatch.setattr(server,'p_or_404',lambda pid:project)
+    monkeypatch.setattr(server,'configured_api_key',lambda:'configured')
+    monkeypatch.setattr(server,'_current_export_preview',lambda *args:render)
+    monkeypatch.setattr(server,'rel_media',lambda *args:design)
+    monkeypatch.setattr(rp.rc,'get_regions',lambda *args:{'source_valid':True,'regions':[]})
+    monkeypatch.setattr(rp,'inspect',lambda *args,**kwargs:{'pages':[{'slide_id':'S001','issues':[]}],'issue_count':0})
+    seen={}
+    async def proposal(*args,**kwargs):
+        seen['call']=args
+        return {'missing':[{'text':'Missing title','box':[.1,.1,.4,.1],'role':'title','confidence':.98,'evidence':'visible in design'}],'review':[]}
+    monkeypatch.setattr(ai,'propose_missing_text',proposal)
+    def fake_create(p,slides,issues,calls,review):
+        seen['issues']=issues;seen['calls']=calls;seen['review']=review
+        return {'token':'test','actions':[],'diagnosis':{'issue_count':1},'ai_calls':calls}
+    monkeypatch.setattr(rp,'create',fake_create)
+    response=client.post('/api/projects/smart/repair/smart-candidates',json={'slides':['S001']})
+    assert response.status_code==200
+    assert seen['calls']==1 and seen['issues']['S001'][0]['text']=='Missing title'
+
 def test_deepseek_network_failure_retries_and_reports_dns_clearly(monkeypatch):
     import asyncio,socket
     attempts={'count':0}
@@ -85,9 +111,9 @@ def test_calibration_prompt_uses_rendered_effect_and_preserves_formula(tmp_path,
     asyncio.run(ai.calibrate_text_layout(project,slide,design,clean,render))
     assert 'PPTX真实渲染' in seen['prompt']
     assert '不得重写、简化、翻译' in seen['prompt']
-    assert 'char_spacing_pt为字间距pt' in seen['prompt']
-    assert 'paragraph_space_before_pt' in seen['prompt']
-    assert '公式仅能修改框、字号和对齐' in seen['system']
+    assert '禁止返回box、坐标、边距' in seen['prompt']
+    assert '缺字/重影/基线/间距问题只记为issues' in seen['prompt']
+    assert '禁止修改几何坐标' in seen['system']
     assert '先从真实渲染观察差异' in seen['system']
 
 def test_calibration_sends_labeled_original_and_current_render_every_call(tmp_path,monkeypatch):
@@ -419,8 +445,12 @@ def test_calibration_agent_uses_current_render_and_only_suggestions(client,monke
             files={'file':(f'S001_{role}.png',png(),'image/png')}).status_code==200
     project=core.read_project(pid)
     core.update_slide(project,'S001',{'elements':[{'id':'heading','kind':'text','text':'Editable','box':[.1,.1,.4,.1],'style':{'size':20}}]})
-    folder=core.project_dir(pid)/'build';(folder/'editable_S001_preview.png').write_bytes(png())
-    (folder/'report_editable.json').write_text(__import__('json').dumps({'project_revision':project['revision']}))
+    # Bind the preview fixture to a real, current exported artifact, without
+    # pretending this inert PNG is an Office rendering. Hash/revision checks stay enabled.
+    report=server.render_deck(pid,'editable');folder=core.project_dir(pid)/'build'
+    name=f"editable_r{project['revision']}_{report['artifact_sha256'][:12]}_S001_preview.png"
+    (folder/name).write_bytes(png());report['previews']=[name]
+    core.safe_json_write(folder/'report_editable.json',report)
     async def fake(*args):
         return {'slide_id':'S001','score':82,'issues':['标题偏低'],
                 'corrections':[{'id':'heading','box':[.1,.08,.4,.1],'style':{'size':22},'reason':'与参考图基线对齐'}]}
@@ -429,4 +459,7 @@ def test_calibration_agent_uses_current_render_and_only_suggestions(client,monke
     assert response.status_code==200,response.text
     assert response.json()['corrections'][0]['id']=='heading'
     assert core.read_project(pid)['slides'][0]['elements'][0]['box']==[.1,.1,.4,.1]
-    assert response.json()['corrections'][0]['box']==[.1,.08,.4,.1]
+    assert 'box' not in response.json()['corrections'][0]
+    assert response.json()['corrections'][0]['style']['size']==22
+    assert response.json()['restricted_suggestions']
+    assert response.json()['corrections'][0]['target_text']=='Editable'
