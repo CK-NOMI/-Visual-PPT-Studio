@@ -7,7 +7,7 @@
   const AppShell = Object.freeze({
     projectItems(projects, activeId) {
       if (!projects.length) return '<p class="hint">还没有项目</p>';
-      return projects.map((project) => `<button class="project-item ${activeId === project.id ? "active" : ""}" data-pid="${escapeHtml(project.id)}"><strong>${escapeHtml(project.title)}</strong><small>${escapeHtml(project.pages)}页 · 设计图${escapeHtml(project.images)}张 · ${project.locked ? "已锁定" : "未锁定"}</small></button>`).join("");
+      return projects.map((project) => `<div class="project-entry"><button class="project-item ${activeId === project.id ? "active" : ""}" data-pid="${escapeHtml(project.id)}"><strong>${escapeHtml(project.title)}</strong><small>${escapeHtml(project.pages)}页 · 设计图${escapeHtml(project.images)}张 · ${project.locked ? "已锁定" : "未锁定"}</small></button><button class="project-delete" data-delete-project="${escapeHtml(project.id)}" title="删除项目" aria-label="删除项目：${escapeHtml(project.title)}">×</button></div>`).join("");
     },
     setProjectContext(project) {
       document.getElementById("projectTitle").textContent = project.title;

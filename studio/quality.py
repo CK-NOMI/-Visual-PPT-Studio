@@ -100,7 +100,11 @@ def audit(project):
                 issues.append(('warning','无法评估设计稿和无文字背景的一致性'))
         for e in els:
             x,y,w,h=e.get('box',[0,0,0,0])
-            if x<0 or y<0 or x+w>1.001 or y+h>1.001:issues.append(('error',f'{e["id"]} 超出页面边界'))
+            # Off-canvas native objects are legal in PowerPoint (for clipping,
+            # bleed, and partially hidden elements). Report them for review,
+            # but do not make an otherwise valid optimized deck impossible to
+            # export solely because an object extends past the slide edge.
+            if x<0 or y<0 or x+w>1.001 or y+h>1.001:issues.append(('warning',f'{e["id"]} 部分超出页面边界；PowerPoint 会按页面裁切显示'))
             if e['kind']=='text' and not e.get('text','').strip():issues.append(('warning',f'{e["id"]} 文本为空'))
             if e['kind']=='text' and w>0 and h>0:
                 st=e.get('style',{})
@@ -212,25 +216,56 @@ def check_saved_layout(project,pptx_path):
                 st=e.get('style',{})
                 latin=st.get('font') or project.get('design',{}).get('font') or 'Arial'
                 east=st.get('eastAsianFont') or latin
-                if len(tf.paragraphs)!=1:
+                multiline='\n' in e.get('text','')
+                if len(tf.paragraphs)!= (e.get('text','').count('\n')+1 if multiline else 1):
                     differences.append({'id':id_,'type':'export_created_multiple_paragraphs'})
+                expected_runs=e.get('rich_runs') or [{'text':e.get('text',''),'style':{}}]
+                expected_segments=[]
+                for fragment in expected_runs:
+                    for part in fragment.get('text','').split('\n'):
+                        if part:expected_segments.append({'text':part,'style':fragment.get('style',{})})
+                actual_runs=[run for p in tf.paragraphs for run in p.runs]
+                if [run.text for run in actual_runs]!=[part['text'] for part in expected_segments]:
+                    differences.append({'id':id_,'type':'rich_run_text_mismatch',
+                        'expected':[part['text'] for part in expected_segments],
+                        'actual':[run.text for run in actual_runs]})
+                for run_index,run in enumerate(actual_runs):
+                    seg=expected_segments[run_index] if run_index<len(expected_segments) else {'style':{}}
+                    run_style={**st,**seg.get('style',{})}
+                    run_latin=run_style.get('font') or latin
+                    run_east=run_style.get('eastAsianFont') or run_style.get('font') or east
+                    size=run.font.size.pt if run.font.size else None
+                    if size is None or abs(size-float(run_style.get('size',18)))>.011:
+                        differences.append({'id':id_,'type':'export_changed_font_size','actual':size,
+                                            'expected':run_style.get('size',18)})
+                    props=run._r.get_or_add_rPr()
+                    for tag,family in [('a:latin',run_latin),('a:ea',run_east),('a:cs',run_east)]:
+                        node=props.find(qn(tag))
+                        if node is None or node.get('typeface')!=family:
+                            differences.append({'id':id_,'type':'export_changed_font','slot':tag,'expected':family,
+                                                'actual':node.get('typeface') if node is not None else None})
+                    if bool(run.font.bold)!=bool(run_style.get('bold',False)) or bool(run.font.italic)!=bool(run_style.get('italic',False)):
+                        differences.append({'id':id_,'type':'export_changed_font_style'})
+                    spacing=props.get('spc')
+                    expected_spacing=round(float(run_style.get('char_spacing_pt',0))*100)
+                    if (spacing is None and expected_spacing!=0) or (spacing is not None and int(spacing)!=expected_spacing):
+                        differences.append({'id':id_,'type':'export_changed_character_spacing',
+                            'expected':expected_spacing,'actual':spacing})
+                    if bool(run.font.underline)!=bool(run_style.get('underline',False)):
+                        differences.append({'id':id_,'type':'export_changed_underline'})
+                    strike=props.get('strike') in {'sngStrike','dblStrike'}
+                    if strike!=bool(run_style.get('strike',False)):
+                        differences.append({'id':id_,'type':'export_changed_strike'})
                 for p in tf.paragraphs:
-                    for run in p.runs:
-                        size=run.font.size.pt if run.font.size else None
-                        if size is None or abs(size-float(e.get('style',{}).get('size',18)))>.011:
-                            differences.append({'id':id_,'type':'export_changed_font_size','actual':size})
-                        props=run._r.get_or_add_rPr()
-                        for tag,family in [('a:latin',latin),('a:ea',east),('a:cs',east)]:
-                            node=props.find(qn(tag))
-                            if node is None or node.get('typeface')!=family:
-                                differences.append({'id':id_,'type':'export_changed_font','slot':tag,'expected':family,
-                                                    'actual':node.get('typeface') if node is not None else None})
-                        if bool(run.font.bold)!=bool(st.get('bold',False)) or bool(run.font.italic)!=bool(st.get('italic',False)):
-                            differences.append({'id':id_,'type':'export_changed_font_style'})
+                    try:
+                        if p.line_spacing is None or abs(float(p.line_spacing)-float(st.get('line_spacing',1.05)))>.011:
+                            differences.append({'id':id_,'type':'export_changed_line_spacing'})
+                    except (TypeError,ValueError):
+                        differences.append({'id':id_,'type':'export_changed_line_spacing'})
                 for key,margin in [('margin_left_pt',tf.margin_left),('margin_right_pt',tf.margin_right),
                                    ('margin_top_pt',tf.margin_top),('margin_bottom_pt',tf.margin_bottom)]:
                     if abs(margin.pt-float(st.get(key,0)))>.011:
                         differences.append({'id':id_,'type':'export_changed_margin','field':key})
         pages.append({'slide_id':source['id'],'pass':not differences,'differences':differences})
     return {'ok':len(pp.slides)==len(project['slides']) and all(p['pass'] for p in pages),
-            'pages':pages,'meaning':'精确文本/空白、对象数量、坐标、字号、边距及禁换行导出契约；WPS视觉验收另行记录。'}
+            'pages':pages,'meaning':'精确文本/空白、富文本段、对象数量、坐标、字号、字距、行距、边距及禁自动缩放导出契约；WPS视觉验收另行记录。'}

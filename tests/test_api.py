@@ -35,21 +35,89 @@ def test_stage03_smart_repair_calls_vision_once_and_builds_isolated_candidate(tm
     monkeypatch.setattr(server,'p_or_404',lambda pid:project)
     monkeypatch.setattr(server,'configured_api_key',lambda:'configured')
     monkeypatch.setattr(server,'_current_export_preview',lambda *args:render)
+    monkeypatch.setattr(server,'_current_export_report',lambda *args:{'artifact_sha256':'a'*64,'preview_renderer':'test'})
+    monkeypatch.setattr(server,'_smart_diagnostic_cache',lambda *args:('cache-key',tmp_path/'cache.json'))
     monkeypatch.setattr(server,'rel_media',lambda *args:design)
     monkeypatch.setattr(rp.rc,'get_regions',lambda *args:{'source_valid':True,'regions':[]})
     monkeypatch.setattr(rp,'inspect',lambda *args,**kwargs:{'pages':[{'slide_id':'S001','issues':[]}],'issue_count':0})
     seen={}
     async def proposal(*args,**kwargs):
         seen['call']=args
-        return {'missing':[{'text':'Missing title','box':[.1,.1,.4,.1],'role':'title','confidence':.98,'evidence':'visible in design'}],'review':[]}
+        seen['verified_layout_issues']=kwargs.get('verified_layout_issues')
+        return {'missing':[{'text':'Missing title','box':[.1,.1,.4,.1],'role':'title','confidence':.98,'evidence':'visible in design'}],
+                'repairs':[{'issue_id':'existing-line','action':'repair_line_layout','object_ids':['title'],'related_object_ids':[],
+                    'confidence':.95,'evidence':'visible baseline conflict','intent':'restore baseline'}],'review':[]}
     monkeypatch.setattr(ai,'propose_missing_text',proposal)
-    def fake_create(p,slides,issues,calls,review):
-        seen['issues']=issues;seen['calls']=calls;seen['review']=review
+    def fake_create(p,slides,issues,calls,review,**kwargs):
+        seen['issues']=issues;seen['calls']=calls;seen['review']=review;seen['ai_intents']=kwargs.get('ai_intents')
         return {'token':'test','actions':[],'diagnosis':{'issue_count':1},'ai_calls':calls}
     monkeypatch.setattr(rp,'create',fake_create)
     response=client.post('/api/projects/smart/repair/smart-candidates',json={'slides':['S001']})
     assert response.status_code==200
-    assert seen['calls']==1 and seen['issues']['S001'][0]['text']=='Missing title'
+    assert seen['calls']==1 and seen['issues'].get('S001',[{}])[0].get('text')=='Missing title', (response.json(),seen)
+    assert seen['ai_intents']['S001'][0]['action']=='repair_line_layout'
+
+def test_vision_focus_regions_keep_unmatched_badge_digit_even_if_same_digit_exists_elsewhere():
+    focus=server._vision_focus_regions([
+        {'id':'badge-1','text':'1','box':[.05,.18,.05,.07],'confidence':.999,'review_reason':'OCR冲突：T'},
+        {'id':'line-1','text':'High confidence source phrase','box':[.1,.4,.3,.04],'confidence':.98},
+    ],[
+        {'id':'diagram-1','text':'1次小模型调用','box':[.4,.8,.3,.04]},
+        {'id':'second-bullet','text':'Different phrase','box':[.1,.5,.3,.04]},
+    ])
+    assert focus[0]['id']=='badge-1'
+    assert any(x['id']=='line-1' for x in focus)
+
+def test_missing_text_vision_request_includes_paired_enlarged_regions(tmp_path,monkeypatch):
+    import asyncio
+    design=tmp_path/'design.png';render=tmp_path/'render.png';design.write_bytes(png());render.write_bytes(png())
+    seen={}
+    async def fake(messages,*args,**kwargs):
+        seen['content']=messages[1]['content']
+        return {'missing':[],'repairs':[],'review':[]}
+    monkeypatch.setattr(ai,'call_deepseek',fake)
+    asyncio.run(ai.propose_missing_text({}, {'id':'S002','title':'','body':''},design,render,[],[],
+        focus_regions=[{'id':'badge-1','text':'1','box':[.05,.18,.05,.07],'reason':'OCR冲突'}]))
+    blocks=seen['content']
+    assert len([x for x in blocks if x.get('type')=='image_url'])==4
+    assert any('放大区域 badge-1 · Design' in x.get('text','') for x in blocks)
+    assert any('放大区域 badge-1 · PPTX' in x.get('text','') for x in blocks)
+
+def test_focus_finding_promotes_only_visual_confirmation_with_no_native_object(tmp_path,monkeypatch):
+    import asyncio
+    design=tmp_path/'design.png';render=tmp_path/'render.png';design.write_bytes(png());render.write_bytes(png())
+    async def fake(*args,**kwargs):
+        return {'missing':[],'repairs':[],'review':['区域疑似有数字'],'focus_findings':[
+            {'region_id':'badge-1','status':'missing','text':'1','visual_confirmed':True,'confidence':.98,'evidence':'Design有1，PPT局部为空'}]}
+    monkeypatch.setattr(ai,'call_deepseek',fake)
+    result=asyncio.run(ai.propose_missing_text({}, {'id':'S002','title':'','body':''},design,render,[],[],
+        focus_regions=[{'id':'badge-1','text':'1','box':[.05,.18,.05,.07],'native_object_ids':[]}]))
+    assert result['missing'][0]['text']=='1' and result['missing'][0]['visual_confirmed'] is True
+    assert result['focus_findings'][0]['status']=='missing'
+
+def test_focus_finding_does_not_duplicate_full_slide_proposal(tmp_path,monkeypatch):
+    import asyncio
+    design=tmp_path/'design.png';render=tmp_path/'render.png';design.write_bytes(png());render.write_bytes(png())
+    async def fake(*args,**kwargs):
+        return {'missing':[{'text':'Missing bullet','box':[.075,.525,.39,.031],'confidence':.95}],
+                'repairs':[],'review':[],'focus_findings':[
+                    {'region_id':'bullet','status':'missing','text':'Missing bullet','visual_confirmed':True,
+                     'confidence':.96,'evidence':'同一位置确实缺失'}]}
+    monkeypatch.setattr(ai,'call_deepseek',fake)
+    result=asyncio.run(ai.propose_missing_text({}, {'id':'S002','title':'','body':''},design,render,[],[],
+        focus_regions=[{'id':'bullet','text':'Missing bullet','box':[.074,.524,.40,.033],'native_object_ids':[]}]))
+    assert len(result['missing'])==1
+
+def test_focus_finding_with_native_occupant_remains_non_actionable(tmp_path,monkeypatch):
+    import asyncio
+    design=tmp_path/'design.png';render=tmp_path/'render.png';design.write_bytes(png());render.write_bytes(png())
+    async def fake(*args,**kwargs):
+        return {'missing':[],'repairs':[],'review':[],'focus_findings':[
+            {'region_id':'badge-1','status':'missing','text':'1','visual_confirmed':True,'confidence':.98,'evidence':'unclear'}]}
+    monkeypatch.setattr(ai,'call_deepseek',fake)
+    result=asyncio.run(ai.propose_missing_text({}, {'id':'S002','title':'','body':''},design,render,[],[],
+        focus_regions=[{'id':'badge-1','text':'1','box':[.05,.18,.05,.07],'native_object_ids':['number-1']}]))
+    assert result['missing']==[] and result['focus_findings'][0]['visual_confirmed'] is False
 
 def test_deepseek_network_failure_retries_and_reports_dns_clearly(monkeypatch):
     import asyncio,socket
@@ -116,6 +184,32 @@ def test_calibration_prompt_uses_rendered_effect_and_preserves_formula(tmp_path,
     assert '禁止修改几何坐标' in seen['system']
     assert '先从真实渲染观察差异' in seen['system']
 
+def test_visual_repair_intents_are_batched_and_bound_to_verified_issue_ids(tmp_path,monkeypatch):
+    import asyncio
+    design=tmp_path/'design.png';render=tmp_path/'render.png'
+    design.write_bytes(png());render.write_bytes(png());seen={}
+    async def fake(messages,*args,**kwargs):
+        seen['prompt']=messages[1]['content'][0]['text']
+        return {'missing':[], 'repairs':[{'issue_id':'line-1','action':'repair_line_layout',
+            'object_ids':['a','b'],'related_object_ids':[],'confidence':.95,'evidence':'DOM baseline differs',
+            'intent':'restore one baseline'}], 'review':[]}
+    monkeypatch.setattr(ai,'call_deepseek',fake)
+    project={'design':{'font':'Arial'}}
+    slide={'id':'S001','title':'Title','body':'Body'}
+    verified=[{'issue_id':'line-1','issue_type':'line_geometry','matched_elements':['a','b'],
+        'suggested_action':'repair_line','confidence':1,'evidence':{'constraints':['baseline_mismatch']}}]
+    result=asyncio.run(ai.propose_missing_text(project,slide,design,render,[],[
+        {'id':'a','kind':'text','text':'Title','box':[.1,.1,.2,.1],'style':{'size':20}},
+        {'id':'b','kind':'text','text':'Body','box':[.3,.1,.2,.1],'style':{'size':20}}],
+        verified_layout_issues=verified,
+        repair_feedback=[{'text':'Missing badge 1','result':'上轮文字未落在原图区域'}]))
+    assert result['repairs'][0]['issue_id']=='line-1'
+    assert 'DOM baseline differs'==result['repairs'][0]['evidence']
+    assert '已证实布局异常' in seen['prompt'] and 'line-1' in seen['prompt']
+    assert '不要返回坐标、字号、颜色、删除指令或改写内容' in seen['prompt']
+    assert '圆形徽标' in seen['prompt'] and 'visual_confirmed' in seen['prompt']
+    assert '此前候选验收反馈' in seen['prompt'] and '上轮文字未落在原图区域' in seen['prompt']
+
 def test_calibration_sends_labeled_original_and_current_render_every_call(tmp_path,monkeypatch):
     import asyncio,base64
     design=tmp_path/'design.png';clean=tmp_path/'clean.png';render=tmp_path/'render.png'
@@ -150,7 +244,7 @@ def test_calibration_rejects_missing_or_aliased_reference_images(tmp_path,monkey
     except ai.AIError as e:assert '同一文件' in str(e)
     else:raise AssertionError('aliased reference images must block calibration')
 
-def test_calibration_prompt_prioritizes_overflow_and_peer_style_consistency(tmp_path,monkeypatch):
+def test_calibration_prompt_prioritizes_browser_verified_layout_and_peer_styles(tmp_path,monkeypatch):
     import asyncio
     design=tmp_path/'design.png';clean=tmp_path/'clean.png';render=tmp_path/'render.png'
     for p in (design,clean,render):p.write_bytes(png())
@@ -169,10 +263,54 @@ def test_calibration_prompt_prioritizes_overflow_and_peer_style_consistency(tmp_
     ]}
     result=asyncio.run(ai.calibrate_text_layout({'design':{'font':'Test'}},slide,design,clean,render,
         optimization_feedback='前一候选未提升，请换方案',optimization_round=2))
-    assert result['layout_issues'][0]['id']=='target'
+    assert result['layout_issues']==[]
+    assert result['layout_observation_status']=='unavailable_no_browser_observation'
+    assert result['layout_evidence'][0]['type']=='estimated_overflow_capacity'
     assert len(result['peer_style_groups'])==1
     assert '并列级别的标题或正文必须保持一致' in seen['prompt']
+    assert '浏览器DOM/Canvas实测布局异常' in seen['prompt']
+    assert '估算不代表字形遮挡/溢出' in seen['prompt']
+    assert 'estimated_overflow_capacity' not in seen['prompt']
+    assert 'frame_overlap' not in seen['prompt']
     assert '前一候选未提升' in seen['prompt']
+
+def test_calibration_frame_intersection_requires_browser_ink_confirmation():
+    slide={'id':'S001','elements':[
+        {'id':'left','kind':'text','text':'作者','box':[.1,.1,.3,.1],'style':{},'line_id':'line','run_order':0},
+        {'id':'right','kind':'text','text':'Name','box':[.2,.1,.3,.1],'style':{},'line_id':'line','run_order':1},
+    ]}
+    current=[{'id':e['id'],'kind':e['kind'],'content':e['text'],'box':e['box'],'style':e['style'],
+              'line_id':e['line_id'],'run_order':e['run_order']} for e in slide['elements']]
+    observation={'stage':{'width':960,'height':540},'objects':[
+        {'id':'left','box_px':{'x':96,'y':54,'width':288,'height':54},
+         'ink_box':{'x':200,'y':60,'width':40,'height':20},'range_rects':[{'x':200,'y':60,'width':40,'height':20}],
+         'baseline_px':75,'overflow':'visible'},
+        {'id':'right','box_px':{'x':192,'y':54,'width':288,'height':54},
+         'ink_box':{'x':260,'y':60,'width':40,'height':20},'range_rects':[{'x':260,'y':60,'width':40,'height':20}],
+         'baseline_px':75,'overflow':'visible'},
+    ]}
+    issues,_,evidence=ai._calibration_layout_context({},slide,current,observation)
+    assert not issues
+    assert len([x for x in evidence if x['type']=='frame_overlap'])==1
+    observation['objects'][1]['ink_box']['x']=230
+    observation['objects'][1]['range_rects'][0]['x']=230
+    issues,_,_=ai._calibration_layout_context({},slide,current,observation)
+    assert any(x['type']=='visible_ink_overlap' for x in issues)
+
+def test_calibration_browser_observation_is_revision_and_frame_bound():
+    project={'id':'project123456','revision':4}
+    slide={'id':'S001','elements':[{'id':'t','kind':'text','text':'Title','box':[.1,.1,.5,.1],
+                                    'style':{'size':18}}]}
+    observation={'project_id':'project123456','project_revision':4,'slide_id':'S001',
+        'stage':{'width':960,'height':540},'objects':[{'id':'t','text':'Title',
+        'box_px':{'x':96,'y':54,'width':480,'height':54},'ink_box':{'x':100,'y':60,'width':80,'height':18},
+        'range_rects':[{'x':100,'y':60,'width':80,'height':18}],'baseline_px':78,
+        'font_size_px':18,'font_weight':'400','font_color':'rgb(0, 0, 0)','overflow':'visible'}]}
+    accepted,status=server.validate_calibration_layout_observation(observation,project,slide)
+    assert status=='revision_bound_chromium_dom' and len(accepted['objects'])==1
+    observation['project_revision']=3
+    ignored,status=server.validate_calibration_layout_observation(observation,project,slide)
+    assert ignored is None and status=='ignored_stale_or_wrong_scope'
 
 
 def test_calibration_accepts_bounded_tracking_and_line_spacing(tmp_path,monkeypatch):

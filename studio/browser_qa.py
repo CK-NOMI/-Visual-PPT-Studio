@@ -70,8 +70,8 @@ def assess_page(project, slide, observation, screenshot, folder, visual_comparis
                 if backend and abs(ink['height']-(backend[3]-backend[1])*scale)>max(.75,ink['height']*.08):
                     issues.append({'type':'browser_backend_glyph_height','severity':'review','expected_px':(backend[3]-backend[1])*scale,'actual_px':ink['height']})
             for warning in layout.get('layout_warning',[]):
-                severity='error' if warning.startswith('layout_conflict:') else 'info' if warning=='source_width_exceeded:no_font_shrink' else 'review'
-                issues.append({'type':warning,'severity':severity,'classification':'source_advance_reference; not frame/ink overflow' if warning=='source_width_exceeded:no_font_shrink' else 'layout_constraint'})
+                severity='error' if warning.startswith('layout_conflict:') else 'info' if warning in {'source_width_exceeded:no_font_shrink','source_width_scaled_to_fit'} else 'review'
+                issues.append({'type':warning,'severity':severity,'classification':'source_width_adjustment; font size scaled only enough to fit the original OCR line' if warning=='source_width_scaled_to_fit' else 'source_advance_reference; not frame/ink overflow' if warning=='source_width_exceeded:no_font_shrink' else 'layout_constraint'})
         # Use matched image evidence as an additional measurement, not as a
         # replacement for the exact DOM export contract.
         for diff in render_diffs:

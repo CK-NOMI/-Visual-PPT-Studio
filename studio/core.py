@@ -103,7 +103,8 @@ def create_project(title:str,topic:str,pages:int=6,style='editorial',audience='é
 def list_projects():
     out=[]
     for d in DATA.iterdir():
-        if d.is_dir() and PROJECT_RE.fullmatch(d.name) and (d/'project.json').is_file():
+        if (d.is_dir() and PROJECT_RE.fullmatch(d.name) and (d/'project.json').is_file()
+                and not (d/'.visual_agent_preview').exists()):
             try:
                 p=read_project(d.name)
                 out.append({'id':p['id'],'title':p['title'],'pages':len(p['slides']),

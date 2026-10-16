@@ -358,6 +358,42 @@ def _dedupe_ocr_fragments(regions: list[dict]) -> list[dict]:
     return kept
 
 
+def _dedupe_identical_ocr_runs(regions: list[dict]) -> list[dict]:
+    """Collapse identical script runs that occupy the same source line region.
+
+    Script splitting can expose a repeated OCR fragment as two separate runs
+    (for example a title read twice from one cropped tile).  Only collapse
+    siblings from the *same* OCR source group when their glyph boxes nearly
+    coincide; repeated labels elsewhere on the slide remain untouched.
+    """
+    def normalized(value):
+        return re.sub(r'[^\w]+', '', unicodedata.normalize('NFKC', str(value or '')).casefold())
+
+    def overlap_fraction(a, b):
+        ax, ay, aw, ah = map(float, a); bx, by, bw, bh = map(float, b)
+        ix = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+        iy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+        return ix * iy / max(1e-9, min(aw * ah, bw * bh))
+
+    ordered = sorted(regions, key=lambda r: (
+        str(r.get('source_group') or r.get('line_id') or ''),
+        int(r.get('char_start') or 0),
+        -float(r.get('confidence') or 0),
+    ))
+    kept: list[dict] = []
+    for row in ordered:
+        text = normalized(row.get('text'))
+        group = row.get('source_group') or row.get('line_id')
+        duplicate = next((prior for prior in kept
+            if text and group and group == (prior.get('source_group') or prior.get('line_id'))
+            and text == normalized(prior.get('text'))
+            and overlap_fraction(row.get('box', [0, 0, 0, 0]), prior.get('box', [0, 0, 0, 0])) >= .96), None)
+        if duplicate:
+            continue
+        kept.append(row)
+    return kept
+
+
 def mark_ocr_conflicts(regions: list[dict]) -> list[dict]:
     """Keep contradictory observations for review, without merging repeated labels.
 
@@ -424,6 +460,7 @@ def detect_text(p:dict,sid:str,backend='auto') -> dict:
     detected=_rapidocr_multiscale(im,full_upscale=True) if backend=='rapidocr' else _tesseract(im)
     detected=[r for r in detected if r['text'] and r['box'][2]>.001 and r['box'][3]>.001]
     detected=_split_mixed_script_regions(mark_ocr_conflicts(detected))
+    detected=_dedupe_identical_ocr_runs(detected)
     detected=sorted(detected,key=lambda r:(round(r['box'][1]/0.025),r['box'][0],r.get('run_order',0)))
     for i,r in enumerate(detected,1):
         r['id']=f'text_{i:03d}'
@@ -438,6 +475,7 @@ def detect_text(p:dict,sid:str,backend='auto') -> dict:
                 r['style']['color']=_visible_ink_color(foreground,local_background)
         r['editable']=False # never auto-promote OCR guesses on complex slides
     out={'slide_id':sid,'backend':backend,'source_sha256':sha_file(source),
+         'source_clean_sha256':sha_file(source_for(p,sid,'clean')) if clean_image is not None else None,
          'image_size':[im.shape[1],im.shape[0]],'regions':detected,
          'notice':'OCR内容和字体仅为候选；必须人工检查。原始规划文案仍是可信来源。'}
     safe_json_write(lab_dir(p['id'])/f'{sid}_ocr.json',out)
@@ -523,11 +561,11 @@ def persist_regions(p:dict,sid:str,regions:list[dict]) -> dict:
               'editable':bool(r.get('editable', False))}
         # Keep script-split provenance across the review/save/reload boundary.
         # Without it, confirmation can no longer reflow chunks as one line.
-        for key in ('source_text','source_group','block_id','line_id','run_id','migration_warning','review_reason'):
+        for key in ('source_text','source_group','block_id','line_id','run_id','migration_warning','review_reason','candidate_source','ai_suggested_role'):
             value=r.get(key)
             if isinstance(value,str) and value and len(value)<=1600:
                 item[key]=value
-        for key in ('char_start','char_end','run_order','whitespace','ocr_box','text_layout','layout_managed','layout_locks','kind','font_size_evidence','review_required','ocr_conflicts'):
+        for key in ('char_start','char_end','run_order','whitespace','ocr_box','text_layout','layout_managed','layout_locks','kind','font_size_evidence','review_required','ocr_conflicts','layout_warning_acknowledged','duplicate_of_existing'):
             if key in r:item[key]=r[key]
         source_box=r.get('source_box')
         if isinstance(source_box,(list,tuple)) and len(source_box)==4:
@@ -551,14 +589,22 @@ def persist_regions(p:dict,sid:str,regions:list[dict]) -> dict:
             if isinstance(value,(int,float)) and not isinstance(value,bool) and abs(value)<=100:
                 safe_style[key]=float(value)
         if safe_style:item['style']=safe_style
-        if layout.get('version')==2 and (box[0]<0 or box[1]<0 or box[0]+box[2]>1.000001 or
-                box[1]+box[3]>1.000001 or any(str(w).startswith('layout_conflict:') for w in layout.get('layout_warning',[]))):
+        has_layout_conflict=(box[0]<0 or box[1]<0 or box[0]+box[2]>1.000001 or
+                box[1]+box[3]>1.000001 or any(str(w).startswith('layout_conflict:') for w in layout.get('layout_warning',[])))
+        if layout.get('version')==2 and has_layout_conflict and not r.get('layout_warning_acknowledged'):
             item['editable']=False
             item['review_required']=True
             item['review_reason']='统一布局存在溢出或裁切冲突，请检查字体、字号和位置后人工确认'
+        elif layout.get('version')==2 and has_layout_conflict and r.get('layout_warning_acknowledged'):
+            item['review_required']=True
+            item['review_reason']='用户已查看候选预览并确认忽略布局预测警告；请在最终 PPTX 中再次核对是否裁切'
         if item['role'] not in ('custom','title','body','ignore'):raise ValueError('role应是custom/title/body/ignore')
         normalized.append(item)
+    clean_hash=None
+    try:clean_hash=sha_file(source_for(p,sid,'clean'))
+    except (ValueError,FileNotFoundError):pass
     out={'slide_id':sid,'backend':'human_reviewed','source_sha256':sha_file(source),
+         'source_clean_sha256':clean_hash,
          'image_size':list(Image.open(source).size),'regions':normalized,
          'reviewed_at':now()}
     safe_json_write(lab_dir(p['id'])/f'{sid}_ocr.json',out)
@@ -570,7 +616,18 @@ def get_regions(p:dict,sid:str) -> dict|None:
     if not f.is_file():return None
     data=json.loads(f.read_text(encoding='utf-8'))
     current=sha_file(source_for(p,sid))
-    data['source_valid']=data.get('source_sha256')==current
+    valid=data.get('source_sha256')==current
+    if valid:
+        try:
+            current_clean=sha_file(source_for(p,sid,'clean'))
+            # Older OCR files only tracked the Design image. They cannot prove
+            # that their derived styles/regions belong to the currently paired
+            # clean background, so prompt a fresh page rebuild instead of
+            # silently restoring a stale overlay.
+            valid=bool(data.get('source_clean_sha256')) and data['source_clean_sha256']==current_clean
+        except (ValueError,FileNotFoundError):
+            valid=not data.get('source_clean_sha256')
+    data['source_valid']=valid
     return data
 
 
@@ -747,13 +804,32 @@ def extract_asset(p:dict,sid:str,box:list[float],make_transparent=False,toleranc
 
 
 def compare_render(p:dict,sid:str,preview_path:Path,output_dir:Path|None=None) -> dict:
-    target=Image.open(source_for(p,sid)).convert('RGB')
+    target_path=source_for(p,sid);slide=find_slide(p,sid)
+    folder=output_dir or lab_dir(p['id']);folder.mkdir(parents=True,exist_ok=True);name=f'{sid}_diff.png'
+    inputs={'revision':p.get('revision'),'slide_id':sid,'design_sha256':sha_file(target_path),
+        'preview_sha256':sha_file(preview_path),'layout':slide.get('elements',[]),
+        'slide_size':p.get('slide_size'),'design':p.get('design'),
+        'renderer_version':p.get('last_report',{}).get('renderer_version'),
+        'comparison_code_sha256':sha_file(Path(__file__)),'opencv':cv2.__version__,
+        'pillow':Image.__version__ if hasattr(Image,'__version__') else 'unknown'}
+    key=hashlib.sha256(json.dumps(inputs,ensure_ascii=False,sort_keys=True,default=str).encode()).hexdigest()
+    cache=project_dir(p['id'])/'build'/'visual_comparison_cache'/key
+    cached_report=cache/f'{sid}_diff_report.json';cached_heat=cache/name
+    if cached_report.is_file() and cached_heat.is_file():
+        try:
+            report=json.loads(cached_report.read_text(encoding='utf-8'))
+            shutil.copy2(cached_heat,folder/name)
+            report={**report,'cache_hit':True,'cache_key':key,'diff':name}
+            safe_json_write(folder/f'{sid}_diff_report.json',report)
+            return report
+        except (OSError,ValueError,TypeError):pass
+    target=Image.open(target_path).convert('RGB')
     actual=Image.open(preview_path).convert('RGB').resize(target.size,Image.Resampling.LANCZOS)
     a=np.asarray(target).astype(np.int16);b=np.asarray(actual).astype(np.int16)
     diff=np.mean(np.abs(a-b),axis=2).astype(np.float32)
     editable_mask=np.zeros(diff.shape,dtype=bool)
     text_regions=[]
-    for element in find_slide(p,sid).get('elements',[]):
+    for element in slide.get('elements',[]):
         if element.get('kind')!='text' or not element.get('text','').strip():continue
         x1,y1,x2,y2=as_pixels(element.get('box'),target.width,target.height)
         if x2<=x1 or y2<=y1:continue
@@ -761,7 +837,6 @@ def compare_render(p:dict,sid:str,preview_path:Path,output_dir:Path|None=None) -
         text_regions.append({'id':str(element.get('id',''))[:64],
             'box':element['box'],'mae_0_255':round(float(np.mean(diff[y1:y2,x1:x2])),3)})
     heat=cv2.applyColorMap(np.clip(diff*3,0,255).astype(np.uint8),cv2.COLORMAP_TURBO)
-    folder=output_dir or lab_dir(p['id']);folder.mkdir(parents=True,exist_ok=True);name=f'{sid}_diff.png'
     Image.fromarray(cv2.cvtColor(heat,cv2.COLOR_BGR2RGB)).save(folder/name)
     objective=score_render_fidelity(p,sid,target,actual)
     report={'slide_id':sid,'mae_0_255':round(float(np.mean(diff)),3),'source_size':list(target.size),
@@ -769,8 +844,12 @@ def compare_render(p:dict,sid:str,preview_path:Path,output_dir:Path|None=None) -
             'background_mae_0_255':round(float(np.mean(diff[~editable_mask])),3) if (~editable_mask).any() else None,
             'native_text_regions':text_regions,
             'objective_score':objective,
-            'note':'objective_score由OCR文字匹配、框坐标、字号/颜色及文字遮罩外背景共同计算；是工程验收指标，不等价于人工审美。','diff':name}
+            'note':'objective_score由OCR文字匹配、框坐标、字号/颜色及文字遮罩外背景共同计算；是工程验收指标，不等价于人工审美。',
+            'diff':name,'cache_hit':False,'cache_key':key}
     safe_json_write(folder/f'{sid}_diff_report.json',report)
+    cache.mkdir(parents=True,exist_ok=True)
+    shutil.copy2(folder/name,cached_heat)
+    safe_json_write(cached_report,report)
     return report
 
 

@@ -32,14 +32,14 @@ DOM_OBSERVATION=r'''() => {
  const objects=[...stage.querySelectorAll('[data-el]')].filter(n=>snapshot.elements.some(e=>e.id===n.dataset.el&&['text','formula'].includes(e.kind)&&e.text.trim())).map(node=>{
   const e=snapshot.elements.find(e=>e.id===node.dataset.el),style=getComputedStyle(node),line=node.querySelector('.glyph-line')||node;
   const walker=document.createTreeWalker(line,NodeFilter.SHOW_TEXT);let text='',textNodes=[],child;while(child=walker.nextNode()){text+=child.textContent;textNodes.push(child)}
-  const ranges=textNodes.flatMap(n=>{const r=document.createRange();r.selectNodeContents(n);return [...r.getClientRects()].map(rect)});
+  const fragments=textNodes.map(n=>{const r=document.createRange();r.selectNodeContents(n);return {text:n.textContent,rects:[...r.getClientRects()].map(rect),font:getComputedStyle(n.parentElement||node)}}),ranges=fragments.flatMap(f=>f.rects);
   const marker=node.querySelector('.baseline-marker'),baseline=marker?marker.getBoundingClientRect().top-s.top:node.getBoundingClientRect().bottom-s.top;
-  ctx.font=`${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;ctx.fontKerning='normal';const m=ctx.measureText(e.text);
-  const n=node.getBoundingClientRect(),textRects=ranges.filter(r=>r.width>0),x=textRects.length?Math.min(...textRects.map(r=>r.x)):n.left-s.left+parseFloat(style.paddingLeft||0);
-  const tracking=parseFloat(style.letterSpacing)||0;
-  const ink={x:x-m.actualBoundingBoxLeft,y:baseline-m.actualBoundingBoxAscent,width:m.actualBoundingBoxLeft+m.actualBoundingBoxRight+Math.max(0,e.text.length-1)*tracking,height:m.actualBoundingBoxAscent+m.actualBoundingBoxDescent};
+  const n=node.getBoundingClientRect(),inkBoxes=[],trackingValues=[];let canvasAdvance=0;
+  for(const f of fragments){if(!f.text.trim()||!f.rects.length)continue;ctx.font=`${f.font.fontStyle} ${f.font.fontWeight} ${f.font.fontSize} ${f.font.fontFamily}`;ctx.fontKerning='normal';const m=ctx.measureText(f.text),x=Math.min(...f.rects.map(r=>r.x)),tracking=parseFloat(f.font.letterSpacing)||0,w=m.actualBoundingBoxLeft+m.actualBoundingBoxRight+Math.max(0,Array.from(f.text).length-1)*tracking,h=m.actualBoundingBoxAscent+m.actualBoundingBoxDescent;canvasAdvance+=m.width;trackingValues.push(tracking);if(w>0&&h>0)inkBoxes.push({x:x-m.actualBoundingBoxLeft,y:baseline-m.actualBoundingBoxAscent,width:w,height:h})}
+  if(!inkBoxes.length)return null;
+  const ink={x:Math.min(...inkBoxes.map(x=>x.x)),y:Math.min(...inkBoxes.map(x=>x.y)),width:Math.max(...inkBoxes.map(x=>x.x+x.width))-Math.min(...inkBoxes.map(x=>x.x)),height:Math.max(...inkBoxes.map(x=>x.y+x.height))-Math.min(...inkBoxes.map(x=>x.y))};
   const font=e.text_layout?.font,status=font?snapshot.fontStatus[`${font.file_identity}:${font.requested_weight}`]:null;
-  return {id:e.id,text:e.kind==='text'?text:e.text,kind:e.kind,box:[(n.x-s.x)/s.width,(n.y-s.y)/s.height,n.width/s.width,n.height/s.height],range_rects:ranges,ink_box:e.kind==='text'?ink:null,baseline_px:baseline,font_size_px:parseFloat(style.fontSize),font_family:style.fontFamily,font_weight:style.fontWeight,font_color:style.color,font_status:status?.status||'legacy_unregistered',font_fallback:status?.fallback||false,canvas_advance_px:m.width,letter_spacing_px:tracking,margins_px:[style.paddingLeft,style.paddingTop,style.paddingRight,style.paddingBottom],white_space:style.whiteSpace,overflow:style.overflow};
+  return {id:e.id,text:e.kind==='text'?text:e.text,kind:e.kind,box:[(n.x-s.x)/s.width,(n.y-s.y)/s.height,n.width/s.width,n.height/s.height],range_rects:ranges,ink_box:e.kind==='text'?ink:null,baseline_px:baseline,font_size_px:parseFloat(style.fontSize),font_family:style.fontFamily,font_weight:style.fontWeight,font_color:style.color,font_status:status?.status||'legacy_unregistered',font_fallback:status?.fallback||false,canvas_advance_px:canvasAdvance,letter_spacing_px:trackingValues[0]||0,margins_px:[style.paddingLeft,style.paddingTop,style.paddingRight,style.paddingBottom],white_space:style.whiteSpace,overflow:style.overflow};
  });
  return {stage:{width:s.width,height:s.height},objects,browser:navigator.userAgent,font_set_status:document.fonts.status};
 }'''
@@ -66,6 +66,15 @@ def select_page(page,sid):
     page.locator('[data-tab="editor"]').click()
     page.wait_for_function('()=>document.querySelector("#stage").clientWidth>0')
     page.evaluate('async()=>{await document.fonts.ready;window.visualPPTStudioQA.alignBaselines();await new Promise(requestAnimationFrame)}')
+
+
+def disable_auto_calibration(page):
+    """Turn off optional calibration controls hidden in the advanced panel."""
+    details=page.locator('.qa-advanced')
+    if details.count() and details.get_attribute('open') is None:
+        details.locator('summary').first.click()
+    page.locator('#autoSupervise').uncheck()
+    page.locator('#autoApplyCalibration').uncheck()
 
 
 def choose_chromium():
@@ -115,7 +124,7 @@ def workflow_fixture(page,url,data_root,source_project):
     snapshot=page.evaluate('()=>window.visualPPTStudioQA.snapshot()')
     confirmed=all(p['confirmed'] for p in snapshot['reconstructionPages']) and len(snapshot['reconstructionPages'])==2
     page.locator('[data-tab="qa"]').click()
-    page.locator('#autoSupervise').uncheck();page.locator('#autoApplyCalibration').uncheck()
+    disable_auto_calibration(page)
     page.locator('[data-tab="upload"]').click()
     with page.expect_response(lambda r:'/export?' in r.url and r.request.method=='POST',timeout=60000) as event:
         page.locator('#finishReconstruction').click()
@@ -160,6 +169,7 @@ def main():
     parser.add_argument('--project',default=None)
     parser.add_argument('--output',default=None)
     parser.add_argument('--skip-workflow',action='store_true')
+    parser.add_argument('--preview-only',action='store_true',help='仅在真实 Chromium 中渲染指定页面，不运行 PPTX/全量 QA')
     parser.add_argument('--strict-visual',action='store_true',help='Fail also on review-only visual/recognized-content differences')
     args=parser.parse_args()
     import re
@@ -210,6 +220,17 @@ def main():
             for sid in slides:
                 print('Browser capture',sid,flush=True)
                 select_page(page,sid)
+                if args.preview_only:
+                    # Iteration preview only needs the selected stage. Skip the
+                    # full-page capture, DOM calibration, OCR/layout comparison,
+                    # and export checks; those run once in final validation.
+                    page.locator('#stage').screenshot(path=folder/f'{sid}_stage.png')
+                    report['pages'].append({'slide_id':sid,'stage_screenshot':f'{sid}_stage.png',
+                        'preview_only':True})
+                    report['preview_only']=True
+                    (folder/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+                    browser.close()
+                    return
                 before=page.evaluate('()=>window.visualPPTStudioQA.snapshot().elements')
                 expected=next(s for s in candidate['slides'] if s['id']==sid)['elements']
                 if not before or [e.get('text') for e in before]!=[e.get('text') for e in expected]:
@@ -219,6 +240,22 @@ def main():
                 page.wait_for_function('(sid)=>{const s=window.visualPPTStudioQA.snapshot();return s.sid===sid&&!s.projectLoading&&s.elements.length>0}',arg=sid)
                 page.evaluate('async()=>{await document.fonts.ready;window.visualPPTStudioQA.alignBaselines();await new Promise(requestAnimationFrame)}')
                 snapshot=page.evaluate('()=>window.visualPPTStudioQA.snapshot()');snapshots[sid]=snapshot['elements']
+                observation_before=page.evaluate('()=>window.visualPPTStudioQA.snapshot()')
+                calibration_observation=page.evaluate('async sid=>await window.visualPPTStudioQA.captureCalibrationLayoutObservation(sid)',sid)
+                observation_after=page.evaluate('()=>window.visualPPTStudioQA.snapshot()')
+                text_count=sum(1 for e in expected if e.get('kind')=='text' and str(e.get('text','')).strip())
+                observation_pass=bool(calibration_observation and
+                    calibration_observation.get('project_id')==snapshot['project']['id'] and
+                    calibration_observation.get('project_revision')==snapshot['project']['revision'] and
+                    calibration_observation.get('slide_id')==sid and
+                    len(calibration_observation.get('objects',[]))==text_count and
+                    observation_before==observation_after)
+                report.setdefault('calibration_observations',{})[sid]={
+                    'pass':observation_pass,'project_revision':calibration_observation.get('project_revision') if calibration_observation else None,
+                    'objects':len(calibration_observation.get('objects',[])) if calibration_observation else 0,
+                    'text_objects_expected':text_count,'ui_state_restored':observation_before==observation_after}
+                if not observation_pass:raise RuntimeError(sid+' Chromium calibration observation is stale, partial, or mutated UI state')
+                (folder/f'{sid}_calibration_dom.json').write_text(json.dumps(calibration_observation,ensure_ascii=False,indent=2))
                 page.screenshot(path=folder/f'{sid}_page.png',full_page=True)
                 page.locator('#stage').screenshot(path=folder/f'{sid}_stage.png')
                 obs=page.evaluate(DOM_OBSERVATION)
@@ -244,7 +281,7 @@ def main():
             page.locator(f'[data-pid="{project["id"]}"]').click()
             page.wait_for_function('(id)=>{const s=window.visualPPTStudioQA.snapshot();return s.project?.id===id&&!s.projectLoading}',arg=project['id'])
             report['workflow']['save_switch_refresh_reopen']={'pass':all(reopened.values()),'pages':reopened}
-            page.locator('[data-tab="qa"]').click();page.locator('#autoSupervise').uncheck();page.locator('#autoApplyCalibration').uncheck()
+            page.locator('[data-tab="qa"]').click();disable_auto_calibration(page)
             with page.expect_response(lambda r:'/export?' in r.url and r.request.method=='POST',timeout=60000) as event:
                 page.locator('#exportEditable').click()
             response=event.value
@@ -275,9 +312,10 @@ def main():
         except subprocess.TimeoutExpired:server.kill();server.wait()
         log.close()
         (folder/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
-        write_html(report,folder)
-        print('Report:',folder/'report.html',flush=True)
-    if report.get('fatal_error') or not report.get('workflow_pass') or not report.get('pptx_pass') or not report.get('layout_contract_pass'):
+        if not args.preview_only:
+            write_html(report,folder)
+            print('Report:',folder/'report.html',flush=True)
+    if report.get('fatal_error') or not report.get('workflow_pass') or not report.get('pptx_pass') or not report.get('layout_contract_pass') or not all(x.get('pass') for x in report.get('calibration_observations',{}).values()):
         return 1
     if args.strict_visual and report.get('visual_status')!='pass':return 1
     # Review-only OCR/style issues are explicitly reported, not silently accepted.

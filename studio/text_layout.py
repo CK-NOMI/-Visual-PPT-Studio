@@ -254,6 +254,27 @@ def layout_elements(elements, theme=None, slide_id='S001', previous=None, line_c
         measurements = [_measure_run(e, theme) for e in runs]
         box = list(runs[0].get('ocr_box') or runs[0].get('source_box') or runs[0]['box'])
         managed = any(e.get('layout_managed', True) for e in runs)
+        # OCR glyph-height estimates can be a little generous (font fallback,
+        # anti-aliasing, or a loose OCR box). Preserve the measured size when it
+        # fits; otherwise scale the whole visual line down only as much as
+        # needed to stay within the original line width. This is preferable to
+        # exporting oversized runs that spill into neighboring content.
+        source_width = box[2]*WIDTH_PT
+        line_warnings = []
+        total = sum(m['advance_pt'] for m in measurements)
+        margin_width = sum(float(e.get('style', {}).get('margin_left_pt', 0))+
+                           float(e.get('style', {}).get('margin_right_pt', 0)) for e in runs)
+        locked_size = any((e.get('layout_locks') or {}).get('size') or
+                          (e.get('layout_locks') or {}).get('style') for e in runs)
+        available_width = max(0.0, source_width-margin_width)
+        if managed and not locked_size and total > available_width+.25:
+            scale = max(.5, min(1.0, (available_width/max(total,.01))*.985))
+            for e in runs:
+                style=e.setdefault('style',{})
+                if isinstance(style.get('size'),(int,float)):
+                    style['size']=round(max(6.0,float(style['size'])*scale),1)
+            measurements = [_measure_run(e, theme) for e in runs]
+            line_warnings.append('source_width_scaled_to_fit')
         # Align visible ink to source glyph bottom, then share this baseline.
         baseline = (box[1]+box[3])*HEIGHT_PT - max(m['ink_box_pt'][3] for m in measurements)
         cursor = box[0]*WIDTH_PT
@@ -266,13 +287,11 @@ def layout_elements(elements, theme=None, slide_id='S001', previous=None, line_c
         constraint=(line_constraints or {}).get(line_id,{})
         baseline=constraint.get('baseline_pt',baseline);cursor=constraint.get('cursor_pt',cursor)
         baseline = max(max(m['ascent_pt'] for m in measurements), baseline)
-        line_warnings = []
         total = sum(m['advance_pt'] for m in measurements)
         if cursor+total > WIDTH_PT+.01:
             line_warnings.append('layout_conflict:line_exceeds_slide')
-        source_width = box[2]*WIDTH_PT
-        if total > source_width+max(2, min(float(e.get('style', {}).get('size', 18)) for e in runs)*.15):
-            line_warnings.append('source_width_exceeded:no_font_shrink')
+        if total > available_width+.5:
+            line_warnings.append('source_width_exceeded:minimum_size_reached')
         line_records = []
         # WPS can wrap a nearly exact-width frame despite wrap="none". Give
         # the frame the available visual-row slot, without adding that empty

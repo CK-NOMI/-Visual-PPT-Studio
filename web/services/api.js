@@ -5,7 +5,10 @@
     try { response = await fetch(url, options); }
     catch (error) {
       if (error instanceof TypeError) {
-        throw new Error(`无法连接本地 VisualPPTStudio 服务（${location.origin}）。服务可能已停止，请重新启动应用后刷新；本次操作未提交。`);
+        const unavailable = new Error(`暂时无法连接本地 VisualPPTStudio 服务（${location.origin}）。请求结果暂时无法确认，恢复连接后请查看任务状态。`);
+        unavailable.status = 0;
+        unavailable.transient = true;
+        throw unavailable;
       }
       throw error;
     }
@@ -14,7 +17,11 @@
     try { data = JSON.parse(raw); } catch { data = { detail: raw.slice(0, 350) }; }
     if (!response.ok) {
       const detail = data.detail;
-      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail || `HTTP ${response.status}`));
+      const failure = new Error(typeof detail === "string" ? detail : detail?.message || JSON.stringify(detail || `HTTP ${response.status}`));
+      failure.status = response.status;
+      failure.detail = detail;
+      failure.transient = response.status >= 500 || response.status === 408 || response.status === 429;
+      throw failure;
     }
     return data;
   }
